@@ -29,7 +29,8 @@ on-device with no cloud, no account and no cost. macOS only; Windows is out of s
 Wisperfy/
 ├── Package.swift              SwiftPM manifest, macOS 26, Swift 6 strict concurrency
 ├── Makefile                   build → bundle → sign → install (the only supported build path)
-├── Resources/                 Info.plist, entitlements, app icon
+├── Resources/                 Info.plist, entitlements, AppIcon.icns (regenerate: `make icon`
+│                              from Icon/MakeIcon.swift; edit the script, not the .icns)
 ├── docs/                      LESSONS.md (lessons learned), CHECKLIST.md (manual tests)
 ├── Tests/WisperfyTests/       Swift Testing: formatters, vocabulary, correction diffs, polish
 └── Sources/Wisperfy/

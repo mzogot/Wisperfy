@@ -21,7 +21,7 @@ ifeq ($(strip $(SIGN_ID)),)
 SIGN_ID := -
 endif
 
-.PHONY: all build test app run install clean logs reset-permissions
+.PHONY: all build test app run install clean logs reset-permissions icon
 
 all: app
 
@@ -71,6 +71,20 @@ logs:
 reset-permissions:
 	tccutil reset Accessibility $(BUNDLE_ID)
 	tccutil reset Microphone $(BUNDLE_ID)
+
+## Regenerate Resources/AppIcon.icns from Resources/Icon/MakeIcon.swift (pure CoreGraphics,
+## works with Command Line Tools alone). Edit the script, run this, commit both.
+icon:
+	@mkdir -p "$(STAGE)/icon/AppIcon.iconset"
+	@swiftc -O Resources/Icon/MakeIcon.swift -o "$(STAGE)/icon/MakeIcon"
+	@cd "$(STAGE)/icon" && ./MakeIcon
+	@cp "$(STAGE)/icon/icon_1024.png" Resources/Icon/AppIcon-1024.png
+	@for s in 16 32 128 256 512; do \
+		sips -z $$s $$s "$(STAGE)/icon/icon_1024.png" --out "$(STAGE)/icon/AppIcon.iconset/icon_$${s}x$${s}.png" >/dev/null; \
+		d=$$((s*2)); sips -z $$d $$d "$(STAGE)/icon/icon_1024.png" --out "$(STAGE)/icon/AppIcon.iconset/icon_$${s}x$${s}@2x.png" >/dev/null; \
+	done
+	@iconutil -c icns "$(STAGE)/icon/AppIcon.iconset" -o Resources/AppIcon.icns
+	@echo "wrote Resources/AppIcon.icns"
 
 clean:
 	@rm -rf .build "$(STAGE)"
