@@ -248,6 +248,7 @@ final class DictationController {
         commitSessionEdits(review: false)
         sessionSuggestions = []
         sessionEntryID = nil
+        vocabulary.reloadIfChanged()   // hand-edited vocabulary.json counts from the next utterance
         formatter.prepare()
 
         switch mode {
@@ -340,7 +341,7 @@ final class DictationController {
 
         if useApple {
             let locale = Locale(identifier: language.localeIdentifier ?? "en-GB")
-            return AppleSpeechEngine(locale: locale, contextualStrings: vocabulary.terms)
+            return AppleSpeechEngine(locale: locale, contextualStrings: vocabulary.hintTerms)
         }
         if !ParakeetModelStore.isDownloaded {
             hint = "Downloading language model, one time (~500 MB)…"
@@ -383,8 +384,12 @@ final class DictationController {
         updatesTask = nil
         engine = nil
 
-        let text = await formatter.format(transcript)
+        let formatted = await formatter.run(transcript)
+        let text = formatted.text
         transcript = text
+        if !formatted.corrections.isEmpty {
+            Log.app.info("vocabulary: \(formatted.corrections.count, privacy: .public) correction(s) applied")
+        }
 
         let seconds = listeningSince.map { $0.duration(to: .now).inSeconds } ?? 0
         listeningSince = nil
@@ -398,7 +403,8 @@ final class DictationController {
                 text: text,
                 source: mode == .session ? .session : .pushToTalk,
                 language: Settings.shared.language,
-                seconds: seconds
+                seconds: seconds,
+                corrections: formatted.corrections
             )
         }
 

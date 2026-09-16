@@ -23,9 +23,9 @@ import Testing
 
     @Test func replacesVariantsOnWordBoundaries() {
         let formatter = VocabularyFormatter(snapshot: snapshot)
-        let (text, hits) = formatter.apply("I opened clot code, then Cloud   Code again. Clotted cream.")
-        #expect(text == "I opened Claude Code, then Claude Code again. Clotted cream.")
-        #expect(hits.values.reduce(0, +) == 2)
+        let result = formatter.apply("I opened clot code, then Cloud   Code again. Clotted cream.")
+        #expect(result.text == "I opened Claude Code, then Claude Code again. Clotted cream.")
+        #expect(result.hits.values.reduce(0, +) == 2)
     }
 
     @Test func fixesCasingOfCanonicalTerm() {
@@ -114,5 +114,115 @@ import Testing
         vocabulary.accept(CorrectionSuggestion(heard: "whisper fi", meant: "Wisperfy"))
         #expect(vocabulary.entries.map(\.canonical) == ["Wisperfy"])
         #expect(vocabulary.snapshot().terms == ["Wisperfy"])
+    }
+}
+
+@Suite struct GluedVariantTests {
+    let snapshot = VocabularySnapshot(entries: [
+        VocabularyEntry(canonical: "Claude Code", variants: ["cloud code"]),
+        VocabularyEntry(canonical: "Vibe Coding", variants: ["wipe coding"]),
+    ])
+
+    @Test func matchesGluedAndHyphenatedForms() {
+        let formatter = VocabularyFormatter(snapshot: snapshot)
+        #expect(formatter.format("CloudCode, Cloud-Code, cloud  code and claudecode") == "Claude Code, Claude Code, Claude Code and Claude Code")
+        #expect(formatter.format("try wipecoding") == "try Vibe Coding")
+    }
+
+    @Test func requiresTheWholePattern() {
+        let formatter = VocabularyFormatter(snapshot: snapshot)
+        #expect(formatter.format("Cloudflare in the cloud, cloud coder") == "Cloudflare in the cloud, cloud coder")
+    }
+
+    @Test func reportsWhatItChanged() {
+        let result = VocabularyFormatter(snapshot: snapshot).apply("open cloud-code and CloudCode, then Claude Code")
+        #expect(result.corrections == [
+            AppliedCorrection(heard: "cloud-code", written: "Claude Code"),
+            AppliedCorrection(heard: "CloudCode", written: "Claude Code"),
+        ])
+        #expect(result.hits.values.reduce(0, +) == 2)
+    }
+}
+
+@Suite @MainActor struct VocabularyFileTests {
+    private func makeDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appending(path: "WisperfyTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+    }
+
+    private func write(_ json: String, in directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try json.write(to: directory.appending(path: "vocabulary.json"), atomically: true, encoding: .utf8)
+    }
+
+    @Test func handWrittenEntriesNeedOnlyACanonical() throws {
+        let directory = makeDirectory()
+        try write(#"[{"canonical": "Vercel"}, {"canonical": "Supabase", "variants": ["super base"]}]"#, in: directory)
+        let vocabulary = Vocabulary(directory: directory)
+        #expect(vocabulary.loadError == nil)
+        #expect(vocabulary.entries.map(\.canonical) == ["Vercel", "Supabase"])
+        #expect(vocabulary.entries[1].variants == ["super base"])
+        #expect(vocabulary.entries[1].hits == 0)
+    }
+
+    @Test func brokenFileIsNeverOverwritten() async throws {
+        let directory = makeDirectory()
+        let broken = #"[{"canonical": "Vercel"}, {"canonical": 5}]"#
+        try write(broken, in: directory)
+        let vocabulary = Vocabulary(directory: directory)
+        #expect(vocabulary.loadError != nil)
+        #expect(vocabulary.entries.isEmpty)
+        vocabulary.add(canonical: "Anthropic")
+        try await Task.sleep(for: .milliseconds(600))
+        let onDisk = try String(contentsOf: directory.appending(path: "vocabulary.json"), encoding: .utf8)
+        #expect(onDisk == broken)
+    }
+
+    @Test func picksUpExternalEdits() async throws {
+        let directory = makeDirectory()
+        try write(#"[{"canonical": "Vercel"}]"#, in: directory)
+        let vocabulary = Vocabulary(directory: directory)
+        #expect(vocabulary.snapshot().terms == ["Vercel"])
+        // Modification dates have one-second resolution on some file systems.
+        try await Task.sleep(for: .seconds(1.1))
+        try write(#"[{"canonical": "Vercel"}, {"canonical": "Anthropic"}]"#, in: directory)
+        #expect(vocabulary.snapshot().terms == ["Vercel", "Anthropic"])
+    }
+
+    @Test func hintTermsAreRankedAndCapped() {
+        let vocabulary = Vocabulary(directory: makeDirectory())
+        for index in 0..<(Vocabulary.maximumHintTerms + 5) {
+            vocabulary.add(canonical: "Term \(index)")
+        }
+        let popular = vocabulary.entries[3]
+        vocabulary.recordHits([popular.id: 7])
+        let hints = vocabulary.hintTerms
+        #expect(hints.count == Vocabulary.maximumHintTerms)
+        #expect(hints.first == "Term 3")
+        #expect(hints[1] == "Term \(Vocabulary.maximumHintTerms + 4)")
+        #expect(!hints.contains("Term 0"))
+    }
+}
+
+@Suite @MainActor struct VocabularyWarningTests {
+    private func makeVocabulary() -> Vocabulary {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "WisperfyTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        return Vocabulary(directory: directory)
+    }
+
+    @Test func flagsCommonSingleWordVariants() {
+        let vocabulary = makeVocabulary()
+        let entry = vocabulary.add(canonical: "Claude Code", variants: ["cloud", "cloud code", "clot code"])
+        let warnings = vocabulary.warnings(for: entry) { ["cloud", "code"].contains($0) }
+        #expect(warnings == [.commonWord(variant: "cloud")])
+    }
+
+    @Test func flagsCollisionsBetweenEntries() {
+        let vocabulary = makeVocabulary()
+        vocabulary.add(canonical: "Claude", variants: ["clot"])
+        let entry = vocabulary.add(canonical: "Clot", variants: ["Claude Code"])
+        let warnings = vocabulary.warnings(for: entry) { _ in false }
+        #expect(warnings == [.collision(text: "Clot", other: "Claude")])
     }
 }

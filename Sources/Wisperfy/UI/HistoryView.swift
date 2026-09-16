@@ -151,6 +151,9 @@ struct HistoryView: View {
                             .padding(HistoryStyle.padding)
                     }
                 }
+                if !entry.corrections.isEmpty {
+                    AppliedCorrectionsView(corrections: entry.corrections)
+                }
                 CorrectionReviewView(
                     suggestions: model.suggestions,
                     accept: { suggestion in
@@ -303,9 +306,13 @@ private struct HistoryRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: HistoryStyle.rowSpacing) {
-            HStack {
+            HStack(spacing: 6) {
                 Text(entry.date.formatted(.relative(presentation: .named)))
                 Spacer()
+                if !entry.corrections.isEmpty {
+                    Image(systemName: "character.book.closed")
+                        .help("\(entry.corrections.count) vocabulary correction(s)")
+                }
                 Text(entry.source == .session ? "Session" : "PTT")
             }
             .font(.system(size: 11, design: .rounded))
@@ -316,5 +323,42 @@ private struct HistoryRow: View {
                 .lineLimit(HistoryStyle.previewLines)
         }
         .padding(.vertical, HistoryStyle.rowSpacing)
+    }
+}
+
+/// "Vocabulary: cloud code → Claude Code" under a transcript, so the user can tell
+/// whether the dictionary is doing anything. Each distinct replacement once, with a
+/// count when it fired more than once.
+private struct AppliedCorrectionsView: View {
+    let corrections: [AppliedCorrection]
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "character.book.closed")
+                .foregroundStyle(.secondary)
+            Text(summary)
+                .font(.system(size: 12, design: .rounded))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, HistoryStyle.padding)
+        .padding(.vertical, HistoryStyle.rowSpacing * 2)
+        .background(.quaternary.opacity(0.4))
+    }
+
+    private var summary: String {
+        var counts: [AppliedCorrection: Int] = [:]
+        var order: [AppliedCorrection] = []
+        for correction in corrections {
+            if counts[correction] == nil { order.append(correction) }
+            counts[correction, default: 0] += 1
+        }
+        return order.map { correction in
+            let count = counts[correction, default: 1]
+            let pair = "“\(correction.heard)” → “\(correction.written)”"
+            return count > 1 ? "\(pair) ×\(count)" : pair
+        }
+        .joined(separator: "   ")
     }
 }

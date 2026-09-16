@@ -8,7 +8,10 @@ import SwiftUI
 final class VocabularyWindow: NSWindow {
     private let model = VocabularyViewModel()
 
+    private let vocabulary: Vocabulary
+
     init(vocabulary: Vocabulary) {
+        self.vocabulary = vocabulary
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: VocabularyStyle.width, height: VocabularyStyle.height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -39,6 +42,7 @@ final class VocabularyWindow: NSWindow {
     }
 
     func show() {
+        vocabulary.reloadIfChanged()
         if !isVisible {
             if frameAutosaveName.isEmpty || !setFrameUsingName(frameAutosaveName) { center() }
         }

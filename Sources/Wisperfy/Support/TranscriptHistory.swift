@@ -23,6 +23,30 @@ struct TranscriptEntry: Codable, Identifiable, Hashable, Sendable {
     let language: String
     /// Seconds of audio captured, for the history list.
     let seconds: Double
+    /// What the vocabulary replaced while formatting, in order. Empty when nothing
+    /// fired, and for entries written before this was recorded.
+    let corrections: [AppliedCorrection]
+
+    init(id: UUID, date: Date, text: String, source: Source, language: String, seconds: Double, corrections: [AppliedCorrection] = []) {
+        self.id = id
+        self.date = date
+        self.text = text
+        self.source = source
+        self.language = language
+        self.seconds = seconds
+        self.corrections = corrections
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        date = try container.decode(Date.self, forKey: .date)
+        text = try container.decode(String.self, forKey: .text)
+        source = try container.decode(Source.self, forKey: .source)
+        language = try container.decode(String.self, forKey: .language)
+        seconds = try container.decode(Double.self, forKey: .seconds)
+        corrections = try container.decodeIfPresent([AppliedCorrection].self, forKey: .corrections) ?? []
+    }
 }
 
 /// Every transcript the app has produced, newest first, persisted as JSON in
@@ -51,7 +75,7 @@ final class TranscriptHistory {
     }
 
     @discardableResult
-    func add(text: String, source: TranscriptEntry.Source, language: DictationLanguage, seconds: Double) -> TranscriptEntry? {
+    func add(text: String, source: TranscriptEntry.Source, language: DictationLanguage, seconds: Double, corrections: [AppliedCorrection] = []) -> TranscriptEntry? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let entry = TranscriptEntry(
@@ -60,7 +84,8 @@ final class TranscriptHistory {
             text: trimmed,
             source: source,
             language: language.rawValue,
-            seconds: seconds
+            seconds: seconds,
+            corrections: corrections
         )
         entries.insert(entry, at: 0)
         if entries.count > Self.limit { entries.removeLast(entries.count - Self.limit) }
@@ -77,7 +102,7 @@ final class TranscriptHistory {
         let old = entries[index]
         entries[index] = TranscriptEntry(
             id: old.id, date: old.date, text: trimmed, source: old.source,
-            language: old.language, seconds: old.seconds
+            language: old.language, seconds: old.seconds, corrections: old.corrections
         )
         save()
         Log.app.info("history: edited entry")

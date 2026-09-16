@@ -116,8 +116,18 @@ Decisions that look odd and are load-bearing:
   invisible to us, so corrections come from editing a transcript in History or the
   session panel. Each substitution is offered once; nothing is auto-learned.
 - **Deterministic mapping is exact, never fuzzy.** A variant like "cloud" → "Claude"
-  would corrupt every real mention of the cloud. Fuzzy, context-aware fixes are the
-  polish model's job, with the glossary in its prompt.
+  would corrupt every real mention of the cloud, so the Vocabulary window warns when a
+  single-word variant is in the system dictionary. The one liberty taken: between the
+  words of a variant any run of whitespace or hyphens matches, including none, so
+  "cloud code" also catches "CloudCode" and "Cloud-Code". The whole pattern is still
+  required on word boundaries. Fuzzy, context-aware fixes are the polish model's job.
+- **vocabulary.json is hand-editable.** Only `canonical` is required per entry. The
+  file is re-read (one stat) before every utterance and when the window opens. If it
+  fails to decode, nothing is written until it loads again, so a typo never wipes the
+  list. Hints to the Apple recognizer are capped (`maximumHintTerms`), most-used first.
+- **History records what the vocabulary changed.** Each `TranscriptEntry` carries the
+  `AppliedCorrection`s that fired, shown under the transcript, so the user can tell
+  whether an entry is doing anything.
 - **Polish never blocks delivery.** It runs only if Apple Intelligence is on and the
   language is supported (no Russian), inside `valueWithTimeout`, and a result that is
   empty or far off the input length is discarded. Rules and vocabulary run regardless.

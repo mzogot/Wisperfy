@@ -20,6 +20,34 @@ struct VocabularyEntry: Codable, Identifiable, Hashable, Sendable {
         self.variants = variants
         self.hits = hits
     }
+
+    /// The file is meant to be hand-editable, so only `canonical` is required. An entry
+    /// typed as `{"canonical": "Vercel"}` gets an id and empty defaults.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        canonical = try container.decode(String.self, forKey: .canonical)
+        variants = try container.decodeIfPresent([String].self, forKey: .variants) ?? []
+        hits = try container.decodeIfPresent(Int.self, forKey: .hits) ?? 0
+    }
+}
+
+/// Something about an entry that will probably surprise the user: a variant that is an
+/// ordinary word, or one that another entry already claims.
+enum VocabularyWarning: Hashable, Sendable {
+    /// A single-word variant the dictionary knows; every occurrence will be rewritten.
+    case commonWord(variant: String)
+    /// The same spelling is listed under another term; the first entry wins silently.
+    case collision(text: String, other: String)
+
+    var message: String {
+        switch self {
+        case .commonWord(let variant):
+            "“\(variant)” is an ordinary word. Every “\(variant)” you say will be replaced."
+        case .collision(let text, let other):
+            "“\(text)” is also listed under “\(other)”. Only the first entry applies."
+        }
+    }
 }
 
 /// A word-level substitution extracted from a user correction, offered once before it
@@ -49,6 +77,11 @@ final class Vocabulary {
 
     private let fileURL: URL
     @ObservationIgnored private var pendingWrite: Task<Void, Never>?
+    /// Modification date of the file as we last read or wrote it.
+    @ObservationIgnored private var knownModificationDate: Date?
+    /// Set when the file exists but could not be decoded. While it is set nothing is
+    /// written, so a typo in a hand-edited file never costs the user their list.
+    private(set) var loadError: String?
 
     init(directory: URL? = nil) {
         let base = directory
@@ -62,15 +95,67 @@ final class Vocabulary {
 
     /// Immutable view for the formatters and the recognizer; safe to hand across actors.
     func snapshot() -> VocabularySnapshot {
+        reloadIfChanged()
         if let cachedSnapshot { return cachedSnapshot }
         let snapshot = VocabularySnapshot(entries: entries)
         cachedSnapshot = snapshot
         return snapshot
     }
 
-    /// Canonical terms, for recognizer hints and the polish prompt.
+    /// Canonical terms, for the polish prompt.
     var terms: [String] {
         entries.map(\.canonical).filter { !$0.isEmpty }
+    }
+
+    /// Recognizer hints are a nudge, and a long list makes the model drift and invent
+    /// text on quiet audio. Terms that have fired most come first, then the newest.
+    static let maximumHintTerms = 50
+
+    var hintTerms: [String] {
+        entries.enumerated()
+            .filter { !$0.element.canonical.trimmingCharacters(in: .whitespaces).isEmpty }
+            .sorted { lhs, rhs in
+                if lhs.element.hits != rhs.element.hits { return lhs.element.hits > rhs.element.hits }
+                return lhs.offset > rhs.offset
+            }
+            .prefix(Self.maximumHintTerms)
+            .map(\.element.canonical)
+    }
+
+    /// What might go wrong with an entry as it stands. `isCommonWord` is the dictionary
+    /// check (the spell checker in the app, anything in tests); it is only asked about
+    /// single-word variants, since a multi-word pattern has to match in full.
+    func warnings(for entry: VocabularyEntry, isCommonWord: (String) -> Bool) -> [VocabularyWarning] {
+        var warnings: [VocabularyWarning] = []
+        for variant in entry.variants {
+            let key = Self.matchKey(variant)
+            guard !key.isEmpty else { continue }
+            if !variant.contains(where: { $0.isWhitespace || $0 == "-" }), isCommonWord(variant) {
+                warnings.append(.commonWord(variant: variant))
+            }
+        }
+        for other in entries where other.id != entry.id {
+            let claimed = ([other.canonical] + other.variants).map(Self.matchKey)
+            for text in [entry.canonical] + entry.variants {
+                let key = Self.matchKey(text)
+                guard !key.isEmpty, claimed.contains(key) else { continue }
+                warnings.append(.collision(text: text, other: other.canonical))
+            }
+        }
+        var seen = Set<VocabularyWarning>()
+        return warnings.filter { seen.insert($0).inserted }
+    }
+
+    /// Picks up edits made to the file outside the app. Cheap (one stat), so it runs
+    /// before every utterance and whenever the Vocabulary window opens. Skipped while
+    /// our own write is pending, since the file would otherwise win over unsaved typing.
+    func reloadIfChanged() {
+        guard pendingWrite == nil else { return }
+        let current = Self.modificationDate(of: fileURL)
+        guard current != knownModificationDate else { return }
+        load()
+        cachedSnapshot = nil
+        Log.app.info("vocabulary: reloaded after external change")
     }
 
     func entry(matching canonical: String) -> VocabularyEntry? {
@@ -151,6 +236,12 @@ final class Vocabulary {
 
     // MARK: - Helpers
 
+    /// `normalize` with the separators between words removed, so "cloud code",
+    /// "Cloud-Code" and "CloudCode" are the same key.
+    nonisolated static func matchKey(_ text: String) -> String {
+        normalize(text).filter { !$0.isWhitespace && $0 != "-" }
+    }
+
     /// Lowercased, single-spaced, without surrounding punctuation.
     nonisolated static func normalize(_ text: String) -> String {
         let collapsed = text
@@ -176,15 +267,52 @@ final class Vocabulary {
     }()
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        knownModificationDate = Self.modificationDate(of: fileURL)
+        guard let data = try? Data(contentsOf: fileURL) else {
+            entries = []
+            loadError = nil
+            return
+        }
         do {
             entries = try Self.decoder.decode([VocabularyEntry].self, from: data)
+            loadError = nil
         } catch {
-            Log.app.error("vocabulary: could not read \(self.fileURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            entries = []
+            loadError = Self.describe(error)
+            Log.app.error("vocabulary: could not read \(self.fileURL.lastPathComponent, privacy: .public): \(self.loadError ?? "", privacy: .public)")
         }
     }
 
+    private static func describe(_ error: Error) -> String {
+        guard let error = error as? DecodingError else { return error.localizedDescription }
+        switch error {
+        case .keyNotFound(let key, let context):
+            return "missing \"\(key.stringValue)\" at \(path(context))"
+        case .typeMismatch(_, let context), .valueNotFound(_, let context):
+            return "\(context.debugDescription) at \(path(context))"
+        case .dataCorrupted(let context):
+            return context.debugDescription
+        @unknown default:
+            return error.localizedDescription
+        }
+    }
+
+    private static func path(_ context: DecodingError.Context) -> String {
+        let parts = context.codingPath.map { key in
+            key.intValue.map { "entry \($0 + 1)" } ?? key.stringValue
+        }
+        return parts.isEmpty ? "top level" : parts.joined(separator: " › ")
+    }
+
+    private nonisolated static func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+    }
+
     private func save() {
+        if let loadError {
+            Log.app.error("vocabulary: not saving over an unreadable file (\(loadError, privacy: .public))")
+            return
+        }
         let data: Data
         do {
             data = try Self.encoder.encode(entries)
@@ -194,25 +322,32 @@ final class Vocabulary {
         }
         let url = fileURL
         let previous = pendingWrite
-        pendingWrite = Task {
+        pendingWrite = Task { [weak self] in
             await previous?.value
             // Coalesce keystroke-by-keystroke edits from the Vocabulary window.
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            await Self.write(data, to: url)
+            let written = await Self.write(data, to: url)
+            guard let self, !Task.isCancelled else { return }
+            if let written { self.knownModificationDate = written }
+            self.pendingWrite = nil
         }
         previous?.cancel()
     }
 
-    private nonisolated static func write(_ data: Data, to url: URL) async {
+    /// Returns the file's modification date after the write, so a reload does not
+    /// mistake our own save for an outside edit.
+    private nonisolated static func write(_ data: Data, to url: URL) async -> Date? {
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
             try data.write(to: url, options: .atomic)
+            return modificationDate(of: url)
         } catch {
             Log.app.error("vocabulary: write failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 }
@@ -224,9 +359,12 @@ struct VocabularySnapshot: Sendable {
     /// Canonical terms in a stable order.
     let terms: [String]
     /// One alternation over every variant and canonical, longest first so multi-word
-    /// variants win over their prefixes. Nil when there is nothing to match.
+    /// variants win over their prefixes. Between the words of a variant any run of
+    /// whitespace or hyphens is accepted, including none, so "cloud code" also catches
+    /// "CloudCode" and "Cloud-Code". The whole pattern still has to match on word
+    /// boundaries: "Cloudflare" and a bare "cloud" are untouched. Nil when empty.
     let matcher: NSRegularExpression?
-    /// Normalized matched text → entry, for looking up what a match belongs to.
+    /// `Vocabulary.matchKey` of the matched text → entry.
     let lookup: [String: VocabularyEntry]
 
     init(entries: [VocabularyEntry]) {
@@ -234,23 +372,26 @@ struct VocabularySnapshot: Sendable {
         self.entries = entries
         terms = entries.map(\.canonical)
 
+        // Keyed without separators, so the glued and hyphenated forms the recognizer
+        // produces ("CloudCode", "Cloud-Code") resolve to the same entry as "cloud code".
         var lookup: [String: VocabularyEntry] = [:]
+        var patterns: [String: String] = [:]
         for entry in entries {
             for variant in [entry.canonical] + entry.variants {
-                let key = Vocabulary.normalize(variant)
+                let key = Vocabulary.matchKey(variant)
                 guard !key.isEmpty, lookup[key] == nil else { continue }
                 lookup[key] = entry
+                let parts = Vocabulary.normalize(variant)
+                    .split(whereSeparator: { $0.isWhitespace || $0 == "-" })
+                    .map { NSRegularExpression.escapedPattern(for: String($0)) }
+                patterns[key] = parts.joined(separator: #"[\s\-]*"#)
             }
         }
         self.lookup = lookup
 
-        let alternatives = lookup.keys
-            .sorted { $0.count > $1.count }
-            .map { key in
-                key.split(separator: " ")
-                    .map { NSRegularExpression.escapedPattern(for: String($0)) }
-                    .joined(separator: #"\s+"#)
-            }
+        let alternatives = patterns
+            .sorted { $0.key.count > $1.key.count }
+            .map(\.value)
         if alternatives.isEmpty {
             matcher = nil
         } else {

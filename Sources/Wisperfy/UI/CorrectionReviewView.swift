@@ -11,6 +11,7 @@ enum VocabularyStyle {
     static let barHeight: CGFloat = 44
     static let termWidth: CGFloat = 180
     static let hitsWidth: CGFloat = 48
+    static let iconWidth: CGFloat = 22
     static let stripSpacing: CGFloat = 6
     static let stripMaxHeight: CGFloat = 96
 }
