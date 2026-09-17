@@ -3,7 +3,7 @@
 Push-to-talk dictation for macOS. Hold a key, talk, release, and clean text lands in
 whatever has focus. Everything runs on this Mac: no cloud, no account, no cost.
 
-**Status:** early release (0.1.0). Two ways to dictate, three languages, two on-device engines.
+**Status:** early release, see the [changelog](CHANGELOG.md). Two ways to dictate, three languages, two on-device engines.
 
 - **Push to talk.** Hold the key, speak, release. Text is typed into the focused app.
 - **Session.** Tap the key (or use the menu). A panel opens and listens until you press
