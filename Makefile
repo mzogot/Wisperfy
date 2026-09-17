@@ -30,10 +30,13 @@ else
 TIMESTAMP := --timestamp=none
 endif
 
-VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.0.0)
+# `make bump VERSION=x.y.z` passes the target version on the command line, which would
+# override a plain VERSION variable. Keep the plist version under a name make cannot clobber.
+VERSION_NEW := $(VERSION)
+override VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.0.0)
 DMG     := $(STAGE)/$(APP)-$(VERSION).dmg
 
-.PHONY: all build test app run install clean logs reset-permissions icon dmg notarize
+.PHONY: all build test app run install clean logs reset-permissions icon dmg notarize bump release
 
 all: app
 
@@ -106,6 +109,38 @@ notarize:
 	xcrun stapler staple "$(DMG)"
 	@cp "$(DMG)" "$(HOME)/Desktop/"
 	@echo "notarized and stapled $(DMG), copy on Desktop"
+
+## Start a release: move CHANGELOG's Unreleased section under a new version heading and
+## bump Info.plist. Review the diff, then commit ("release: x.y.z") and run `make release`.
+##   make bump VERSION=0.2.0
+bump:
+	@test -n "$(VERSION_NEW)" || { echo "usage: make bump VERSION=x.y.z"; exit 1; }
+	@echo "$(VERSION_NEW)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "VERSION must be x.y.z"; exit 1; }
+	@! grep -q "^## \[$(VERSION_NEW)\]" CHANGELOG.md || { echo "CHANGELOG.md already has $(VERSION_NEW)"; exit 1; }
+	@awk -v v="$(VERSION_NEW)" -v d="$$(date +%Y-%m-%d)" -v prev="$(VERSION)" '\
+		/^## \[Unreleased\]/ { print; print ""; print "## [" v "] - " d; next } \
+		/^\[Unreleased\]: / { sub(/v[0-9.]+\.\.\.HEAD/, "v" v "...HEAD"); print; \
+		    print "[" v "]: https://github.com/mzogot/Wisperfy/compare/v" prev "...v" v; next } \
+		{ print }' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION_NEW)" Resources/Info.plist
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$(( $$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist) + 1 ))" Resources/Info.plist
+	@echo "bumped to $(VERSION_NEW); fill in the CHANGELOG section, commit, then: make release"
+
+## Publish: checks that the changelog and version are in place, then dmg → notarize →
+## tag → push → GitHub release with the changelog section as notes.
+release:
+	@test -z "$$(git status --porcelain)" || { echo "working tree not clean; commit first"; exit 1; }
+	@grep -q "^## \[$(VERSION)\] - " CHANGELOG.md || { echo "CHANGELOG.md has no '## [$(VERSION)] - date' section; run make bump VERSION=..."; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null || { echo "tag v$(VERSION) already exists"; exit 1; }
+	@awk '/^## \[$(VERSION)\]/ { on=1; next } /^## \[|^\[[^ ]*\]: / { on=0 } on' CHANGELOG.md \
+		| sed -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' > "$(STAGE)/notes-$(VERSION).md"
+	@test -s "$(STAGE)/notes-$(VERSION).md" || { echo "CHANGELOG section for $(VERSION) is empty"; exit 1; }
+	@$(MAKE) dmg
+	@$(MAKE) notarize
+	@git tag -a "v$(VERSION)" -m "Wisperfy $(VERSION)"
+	@git push origin HEAD "v$(VERSION)"
+	@gh release create "v$(VERSION)" "$(DMG)" --title "Wisperfy $(VERSION)" --notes-file "$(STAGE)/notes-$(VERSION).md"
+	@echo "released v$(VERSION)"
 
 ## Live log stream from the running app.
 logs:

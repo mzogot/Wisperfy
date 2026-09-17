@@ -32,7 +32,8 @@ Needs a Swift 6 toolchain; the Xcode Command Line Tools are enough, Xcode is not
 A Developer ID certificate is auto-detected for signing. Without one the build is
 signed ad hoc, which works but macOS forgets the permission grants on every rebuild.
 `make dmg` and `make notarize` produce the release image (see the Makefile for the
-credentials file it expects).
+credentials file it expects). Releases are cut with `make bump` and `make release`;
+see [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## First run
 

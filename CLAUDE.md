@@ -29,6 +29,7 @@ on-device with no cloud, no account and no cost. macOS only; Windows is out of s
 Wisperfy/
 ├── Package.swift              SwiftPM manifest, macOS 26, Swift 6 strict concurrency
 ├── Makefile                   build → bundle → sign → install (the only supported build path)
+├── CHANGELOG.md               Keep a Changelog format; every release starts here
 ├── Resources/                 Info.plist, entitlements, AppIcon.icns (regenerate: `make icon`
 │                              from Icon/MakeIcon.swift; edit the script, not the .icns)
 ├── docs/                      LESSONS.md (lessons learned), CHECKLIST.md (manual tests)
@@ -67,6 +68,23 @@ Wisperfy/
 - **Support/TranscriptHistory.swift**: every finished transcript, newest first, as JSON in
   `~/Library/Application Support/Wisperfy/history.json`. Capped at 500 entries.
 - **Support/Timeout.swift**: `awaitWithTimeout` for engine calls that may never return.
+
+## Releasing
+
+Changelog and version first, everything else after. Never tag or upload by hand.
+
+1. During work, add user-facing changes under `## [Unreleased]` in `CHANGELOG.md`
+   (Added / Changed / Fixed / Removed). Commit-level detail stays in git.
+2. `make bump VERSION=x.y.z` moves Unreleased under a dated version heading, updates
+   the compare links and sets `CFBundleShortVersionString` (+1 on `CFBundleVersion`).
+   Patch = fixes only, minor = new behaviour; major stays 0 until the app is stable.
+3. Review, fill in anything missing, commit as `release: x.y.z`.
+4. `make release` refuses to run on a dirty tree, a missing or empty changelog section,
+   or an existing tag. Then: `dmg` → `notarize` → `git tag vx.y.z` → push → GitHub
+   release with the changelog section as notes and the DMG attached.
+
+Public repo: https://github.com/mzogot/Wisperfy. Notarization credentials live in
+`.env.release.local` (gitignored).
 
 ## Setup & Installation
 
@@ -192,8 +210,10 @@ touching an area.
 make install                 # the normal loop
 make test                    # unit tests for the pure pieces
 make run                     # run from the build cache without installing
+make bump VERSION=x.y.z      # start a release: changelog section + Info.plist version
+make release                 # dmg → notarize → tag → push → GitHub release (guards first)
 make dmg                     # shareable release DMG in ~/Library/Caches/WisperfyBuild
-make notarize                # notarize + staple that DMG (needs a notarytool keychain profile)
+make notarize                # notarize + staple that DMG (credentials in .env.release.local)
 make clean                   # remove build cache and staged bundle
 /usr/bin/log show --last 5m --info --predicate 'subsystem == "com.wisperfy.app"' --style compact
 ```
