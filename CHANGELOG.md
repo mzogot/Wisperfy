@@ -10,8 +10,12 @@ Every release starts by moving the Unreleased section into a new version heading
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-17
+
 ### Added
 
+- The LICENSE and third-party notices now travel inside the app bundle, and the
+  bundle carries a copyright string.
 - This changelog, and `make bump` / `make release` so every release is versioned,
   notarized, tagged and published in one guarded step.
 
@@ -45,7 +49,8 @@ First public release.
 - Menu bar icon, generated from `Resources/Icon/MakeIcon.swift`.
 - Build system: `make install` for development, `make dmg` for a release build with a
   timestamped Developer ID signature, `make notarize` to notarize and staple the DMG.
-- MIT license and third-party notices, shipped inside the app bundle.
+- MIT license and third-party notices (FluidAudio, Parakeet) in the repository.
 
-[Unreleased]: https://github.com/mzogot/Wisperfy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mzogot/Wisperfy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mzogot/Wisperfy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mzogot/Wisperfy/releases/tag/v0.1.0

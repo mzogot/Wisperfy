@@ -122,8 +122,10 @@ bump:
 		/^\[Unreleased\]: / { sub(/v[0-9.]+\.\.\.HEAD/, "v" v "...HEAD"); print; \
 		    print "[" v "]: https://github.com/mzogot/Wisperfy/compare/v" prev "...v" v; next } \
 		{ print }' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
-	@/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION_NEW)" Resources/Info.plist
-	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$(( $$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist) + 1 ))" Resources/Info.plist
+	@# sed, not PlistBuddy: PlistBuddy rewrites the whole file, sorting keys and dropping comments.
+	@build=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist); \
+	sed -i '' -e '/<key>CFBundleShortVersionString<\/key>/{n;s|<string>[^<]*</string>|<string>$(VERSION_NEW)</string>|;}' \
+	          -e "/<key>CFBundleVersion<\/key>/{n;s|<string>[^<]*</string>|<string>$$((build + 1))</string>|;}" Resources/Info.plist
 	@echo "bumped to $(VERSION_NEW); fill in the CHANGELOG section, commit, then: make release"
 
 ## Publish: checks that the changelog and version are in place, then dmg → notarize →
