@@ -56,7 +56,9 @@ final class SessionPanel: NSPanel {
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = HUDStyle.fadeOut
             animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, completionHandler: { @Sendable [weak self] in
+            // @Sendable: AppKit calls this later; an isolated closure would run the
+            // runtime isolation check on entry, which has crashed (docs/LESSONS.md).
             Task { @MainActor in self?.orderOut(nil) }
         })
     }

@@ -57,7 +57,9 @@ final class HUDPanel: NSPanel {
             context.duration = HUDStyle.fadeOut
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        }, completionHandler: { @Sendable [weak self] in
+            // @Sendable: AppKit calls this later; an isolated closure would run the
+            // runtime isolation check on entry, which has crashed (docs/LESSONS.md).
             Task { @MainActor in self?.orderOut(nil) }
         })
     }

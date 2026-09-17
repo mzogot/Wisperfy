@@ -34,7 +34,7 @@ struct HUDView: View {
 
             Text(caption)
                 .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(controller.transcript.isEmpty ? .secondary : .primary)
+                .foregroundStyle(showsTranscript ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -46,13 +46,19 @@ struct HUDView: View {
         .overlay(Capsule().strokeBorder(HUDStyle.hairline, lineWidth: 0.5))
     }
 
+    /// A private utterance (password field) never shows its text on screen.
+    private var showsTranscript: Bool {
+        !controller.transcript.isEmpty && !controller.privateUtterance
+    }
+
     private var caption: String {
-        if !controller.transcript.isEmpty { return controller.transcript }
+        if let hint = controller.hint { return hint }   // model download, delivery notes
+        if showsTranscript { return controller.transcript }
         switch controller.state {
         case .idle: return ""
-        case .starting: return controller.hint ?? "Getting ready…"
-        case .listening: return "Listening…"
-        case .finishing: return "Transcribing…"
+        case .starting: return "Getting ready…"
+        case .listening: return controller.privateUtterance ? "Listening, private field…" : "Listening…"
+        case .finishing: return controller.privateUtterance ? "Typing, not saved…" : "Transcribing…"
         case .error(let message): return message
         }
     }
@@ -64,14 +70,20 @@ struct StatusDot: View {
     var body: some View {
         // No @State here on purpose: the Command Line Tools toolchain lacks the SwiftUI
         // macro plugin, so the pulse is driven by a phase animator instead.
-        Circle()
+        //
+        // Both closures are @Sendable so they do not inherit main-actor isolation from
+        // `body`. SwiftUI invokes them from its animation machinery, and the runtime
+        // isolation check that an isolated closure performs on entry has crashed there
+        // (see docs/LESSONS.md, "Isolation check crashes in framework callbacks").
+        let listening = state == .listening
+        return Circle()
             .fill(color)
             .frame(width: HUDStyle.dotSize, height: HUDStyle.dotSize)
-            .phaseAnimator([false, true]) { dot, expanded in
+            .phaseAnimator([false, true]) { @Sendable dot, expanded in
                 dot
-                    .scaleEffect(state == .listening && expanded ? 1.25 : 1)
-                    .opacity(state == .listening && expanded ? 0.7 : 1)
-            } animation: { _ in
+                    .scaleEffect(listening && expanded ? 1.25 : 1)
+                    .opacity(listening && expanded ? 0.7 : 1)
+            } animation: { @Sendable _ in
                 .easeInOut(duration: 0.9)
             }
     }

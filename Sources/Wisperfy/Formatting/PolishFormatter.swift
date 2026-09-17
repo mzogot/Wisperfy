@@ -58,7 +58,13 @@ actor PolishFormatter {
         }
 
         let session = LanguageModelSession(model: model, instructions: Self.instructions(glossary: glossary.entries))
+        // The macOS 27 SDK (FoundationModels 2.x) renamed the label and deprecates the
+        // old one; the 26 SDK only has the old one. Both run on macOS 26.
+        #if canImport(FoundationModels, _version: 2.0)
         let options = GenerationOptions(samplingMode: .greedy)
+        #else
+        let options = GenerationOptions(sampling: .greedy)
+        #endif
         let started = ContinuousClock.now
         let result = await valueWithTimeout(Self.timeout) { () -> String? in
             do {

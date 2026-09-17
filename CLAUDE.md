@@ -43,7 +43,8 @@ Wisperfy/
     ├── UI/                    HUDPanel + HUDView (push to talk), SessionPanel + SessionView,
     │                          HistoryWindow + HistoryView (past transcripts, editable),
     │                          VocabularyWindow + VocabularyView, CorrectionReviewView
-    └── Support/               Settings, Permissions, Log, Timeout, TranscriptHistory, Vocabulary
+    └── Support/               Settings, Permissions, Log, Timeout, TranscriptHistory, Vocabulary,
+                               Clipboard (the only pasteboard writer), PrivateFile (0600 writes)
 ```
 
 ## File Structure
@@ -51,8 +52,15 @@ Wisperfy/
 - **Core/DictationController.swift**: the state machine. `idle → starting → listening →
   finishing → idle`, two modes (`pushToTalk`, `session`). Everything is wired here.
 - **Core/HotkeyMonitor.swift**: `CGEventTap` on modifier `flagsChanged`. Needs Accessibility.
-- **Core/AudioCapture.swift**: `AVAudioEngine` tap, converts to the engine's format, RMS level.
+- **Core/AudioCapture.swift**: an actor owning a fresh `AVAudioEngine` per capture,
+  converts to the engine's format, RMS level, pins the IO unit to the chosen device
+  (`MicrophoneChoice`, built-in by default). Never called from the main thread: the
+  engine has blocked forever during a Bluetooth input switch, and the controller
+  bounds every call with a timeout. `Support/AudioDevices.swift` holds the read-only
+  HAL queries; those are cheap and the menu may call them.
 - **Core/TextInjector.swift**: Accessibility insert verified by caret movement, else paste.
+  Detects secure text fields (`AXSecureTextField` subrole) and types into those as
+  keystrokes, never via the pasteboard.
 - **Transcription/**: two engines behind one protocol. Apple = streaming, en/de, takes the
   vocabulary as contextual hints. Parakeet (FluidAudio, CoreML) = batch with periodic
   partials, 25 languages incl. Russian, auto-detect, no vocabulary hook.
@@ -80,7 +88,9 @@ Changelog and version first, everything else after. Never tag or upload by hand.
    Patch = fixes only, minor = new behaviour; major stays 0 until the app is stable.
 3. Review, fill in anything missing, commit as `release: x.y.z`.
 4. `make release` refuses to run on a dirty tree, a missing or empty changelog section,
-   or an existing tag. Then: `dmg` → `notarize` → `git tag vx.y.z` → push → GitHub
+   or an existing tag. While macOS 26 is still supported, cut releases with the oldest
+   supported SDK (`make release SDK=26.5`) even on a newer Mac; the Makefile otherwise
+   picks the newest SDK not newer than the running OS. Then: `dmg` → `notarize` → `git tag vx.y.z` → push → GitHub
    release with the changelog section as notes and the DMG attached.
 
 Public repo: https://github.com/mzogot/Wisperfy. Notarization credentials live in
@@ -124,7 +134,22 @@ Decisions that look odd and are load-bearing:
   and drop it. Only a moved caret counts; otherwise fall back to paste.
 - **The final text always lands on the clipboard and in history, in both modes.** The
   paste fallback does not restore the previous clipboard: a swallowed paste must still
-  be one ⌘V away.
+  be one ⌘V away. `Clipboard.set` is the only pasteboard writer; with the opt-in
+  "Hide from Clipboard Managers" setting it adds the nspasteboard.org concealed marker.
+- **Except into password fields.** A push-to-talk utterance whose focused element has
+  the `AXSecureTextField` subrole (checked at key press and again before delivery) is
+  `privateUtterance`: raw transcript typed as keystrokes, no HUD text, no formatting,
+  no clipboard, no history, no polish. A tap that converts to a session clears it.
+- **Text goes only to the app that was in front at key press.** Delivery can be many
+  seconds later; if `frontmostApplication` changed, nothing is typed and the HUD says
+  the text is on the clipboard. It is a pid check, deliberately coarse.
+- **Transcript text never reaches the log.** Log character counts. `make test` runs
+  `lint-logs`, a grep that fails on `Log.*(...\(text` and friends.
+- **Files are 0600 in a 0700 folder.** `PrivateFile.write` is the only writer for
+  history.json and vocabulary.json and re-tightens modes on every write.
+- **Supply chain is pinned.** FluidAudio is `exact:` in Package.swift; the model host
+  is set to huggingface.co at load time so `REGISTRY_URL` in the environment cannot
+  redirect it. `make dmg` refuses an ad-hoc signature.
 - **Engine calls are bounded.** `finalizeAndFinishThroughEndOfInput` and the results
   stream have hung with near-zero audio. Keep the `awaitWithTimeout` wrappers.
 - **Tap vs hold** is a 350 ms threshold in the controller. The pipeline is already
@@ -162,7 +187,10 @@ Decisions that look odd and are load-bearing:
 3. **Protocols are the swap points.** New engines implement `TranscriptionEngine`; new
    cleanup tiers implement `TextFormatter`. `DictationController` should not change.
 4. **Swift 6 strict concurrency, no warnings.** Fix isolation properly, not with
-   `assumeIsolated` (it asserts, it does not check).
+   `assumeIsolated` (it asserts, it does not check). Runtime isolation checks are
+   compiled out (`-disable-dynamic-actor-isolation` in Package.swift) because they
+   crashed in framework callbacks; the static checks are the safety net, so never
+   silence a concurrency diagnostic.
 5. **Reference, don't copy.** `per-simmons/murmur-youtube` guided the design but has no
    license. Write our own code.
 
@@ -178,8 +206,12 @@ Decisions that look odd and are load-bearing:
 
 1. Build and run with `make install`; `swift build` alone produces a binary that cannot
    get permissions. Build products live in `~/Library/Caches/WisperfyBuild`, never in-tree.
+   The Makefile builds against the newest SDK not newer than the running macOS; a bare
+   `swift build` uses the toolchain default, which can be a newer SDK and has crashed
+   at runtime (see `docs/LESSONS.md`).
 2. Verify with `make logs`. A full run logs `listening → finishing → capture stopped →
-   inserted|pasted|copied`. A crash leaves a report in `~/Library/Logs/DiagnosticReports`.
+   inserted|pasted|copied`. About shows `x.y.z (n dev <sha>+)` for dev builds; the
+   version itself only changes at release time via `make bump`. A crash leaves a report in `~/Library/Logs/DiagnosticReports`.
 3. Synthetic key events (`CGEvent` with `.flagsChanged`) exercise the state machine but
    produce no speech; real transcription needs a human at the microphone.
 4. Toolchain constraint: this Mac has Command Line Tools only. The SwiftUI macro plugin is
@@ -188,10 +220,11 @@ Decisions that look odd and are load-bearing:
 
 ## Testing Requirements
 
-`make test` runs the Swift Testing target (works with Command Line Tools alone; the
-`@Test` / `#expect` macros compile). It covers `RuleBasedFormatter`, `VocabularyFormatter`,
-`WordDiff` and `Vocabulary` learning; the `PolishFormatter` tests self-skip when Apple
-Intelligence is off. Anything touching TCC, the event tap or audio needs a signed bundle
+`make test` runs `lint-logs` and then the Swift Testing target (works with Command Line
+Tools alone; the Makefile passes the Testing macro plugin path that Swift 6.4 CLT no
+longer find by themselves). It covers `RuleBasedFormatter`, `VocabularyFormatter`,
+`WordDiff`, `Vocabulary` learning and `PrivateFile` modes; the `PolishFormatter` tests
+self-skip when Apple Intelligence is off. Anything touching TCC, the event tap or audio needs a signed bundle
 and a person: that is `docs/CHECKLIST.md`, not CI. Run the relevant section after
 touching an area.
 

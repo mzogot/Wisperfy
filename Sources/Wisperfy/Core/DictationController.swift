@@ -50,11 +50,18 @@ final class DictationController {
     private(set) var hint: String?
     /// Smoothed 0…1 microphone level for the HUD meter.
     private(set) var level: Float = 0
+    /// Loudest level seen this utterance, logged at the end: 0.00 means the chosen
+    /// microphone delivered silence, whatever the engine made of it.
+    private var peakLevel: Float = 0
     private(set) var hotkeyArmed = false
     private(set) var sessionPanelVisible = false
     /// Corrections extracted from the user's edits in the session panel, awaiting a
     /// yes or no before they join the vocabulary.
     private(set) var sessionSuggestions: [CorrectionSuggestion] = []
+    /// True while a push-to-talk utterance targets a password field. The text is then
+    /// typed as keystrokes and forgotten: no clipboard, no history, no HUD caption, no
+    /// formatting. Checked at key press and again just before delivery.
+    private(set) var privateUtterance = false
 
     /// Every finished transcript, newest first. Shown in the History window.
     let history = TranscriptHistory()
@@ -65,8 +72,15 @@ final class DictationController {
     /// A press shorter than this is a tap, which toggles a session instead of dictating.
     private static let tapThreshold: Duration = .milliseconds(350)
 
+    /// Seconds to wait for the microphone to start before giving up on that engine.
+    private static let captureStartTimeout = 4.0
+    /// Seconds to wait for capture to stop; a stuck engine must not hold up delivery.
+    private static let captureStopTimeout = 2.0
+
     private let hotkey = HotkeyMonitor()
-    private let capture = AudioCapture()
+    /// Replaced when a start times out: the stuck instance is abandoned (and told to
+    /// stop once it wakes up) so the next utterance gets a working microphone.
+    private var capture = AudioCapture()
     @ObservationIgnored private lazy var formatter = FormattingPipeline(vocabulary: vocabulary)
     @ObservationIgnored private lazy var hud = HUDPanel(controller: self)
     @ObservationIgnored private lazy var session = SessionPanel(controller: self)
@@ -84,6 +98,9 @@ final class DictationController {
     /// edits in the panel can be saved and compared.
     private var sessionEntryID: TranscriptEntry.ID?
     private var sessionFinalText = ""
+    /// The app that was frontmost when the push-to-talk key went down. Delivery can be
+    /// seconds later; if another app is in front by then, nothing is typed into it.
+    private var targetPID: pid_t?
 
     // MARK: - Lifecycle
 
@@ -242,9 +259,12 @@ final class DictationController {
         state = .starting
         transcript = ""
         level = 0
+        peakLevel = 0
         hint = nil
         releasePending = false
         copiedToClipboard = false
+        privateUtterance = false
+        targetPID = nil
         commitSessionEdits(review: false)
         sessionSuggestions = []
         sessionEntryID = nil
@@ -253,6 +273,9 @@ final class DictationController {
 
         switch mode {
         case .pushToTalk:
+            targetPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            privateUtterance = TextInjector.focusedElementIsSecure()
+            if privateUtterance { Log.app.info("private field focused; this utterance is not kept") }
             hud.show()
         case .session:
             sessionText = ""
@@ -267,6 +290,8 @@ final class DictationController {
         guard mode == .pushToTalk, state.isActive else { return }
         mode = .session
         releasePending = false
+        privateUtterance = false   // a session delivers to the panel, not to the field
+        targetPID = nil
         sessionText = transcript
         hud.hide()
         showSessionPanel()
@@ -298,9 +323,7 @@ final class DictationController {
                 }
             }
 
-            let audio = try capture.start(format: format) { [weak self] raw in
-                Task { @MainActor in self?.absorbLevel(raw) }
-            }
+            let audio = try await startCapture(format: format)
 
             // One task, one stream, sequential awaits: this is what keeps audio in order.
             feedTask = Task {
@@ -320,6 +343,38 @@ final class DictationController {
         } catch {
             fail(error.localizedDescription)
         }
+    }
+
+    /// Starts the microphone with a timeout. CoreAudio has blocked forever inside
+    /// `AVAudioEngine.prepare()` while an input device was switching; a bounded wait
+    /// turns that into an error the user can read instead of a frozen app.
+    private func startCapture(format: AVAudioFormat) async throws -> AsyncStream<AudioChunk> {
+        let capture = self.capture
+        let microphone = Settings.shared.microphone
+        let outcome = await valueWithTimeout(Self.captureStartTimeout) { [weak self] () -> Result<AsyncStream<AudioChunk>, any Error> in
+            do {
+                let stream = try await capture.start(format: format, microphone: microphone) { raw in
+                    Task { @MainActor in self?.absorbLevel(raw) }
+                }
+                return .success(stream)
+            } catch {
+                return .failure(error)
+            }
+        }
+        guard let outcome else {
+            Log.audio.error("microphone did not start within \(Self.captureStartTimeout, privacy: .public)s; abandoning that engine")
+            Task { await capture.stop() }   // runs whenever the stuck call returns
+            self.capture = AudioCapture()
+            throw AudioCaptureError.startTimedOut
+        }
+        return try outcome.get()
+    }
+
+    /// Stops capture without letting a stuck engine hold up the rest of the pipeline.
+    private func stopCapture() async {
+        let capture = self.capture
+        let stopped = await awaitWithTimeout(Self.captureStopTimeout) { await capture.stop() }
+        if !stopped { Log.audio.error("capture did not stop within \(Self.captureStopTimeout, privacy: .public)s") }
     }
 
     /// Picks the engine for the current language and engine preference.
@@ -366,7 +421,8 @@ final class DictationController {
     }
 
     private func finishPipeline() async {
-        capture.stop()
+        await stopCapture()
+        Log.audio.info("peak input level \(self.peakLevel, format: .fixed(precision: 2), privacy: .public)")
         await feedTask?.value
         feedTask = nil
 
@@ -383,6 +439,16 @@ final class DictationController {
         }
         updatesTask = nil
         engine = nil
+
+        // Focus may have moved into a password field while the user was speaking.
+        if mode == .pushToTalk, !privateUtterance, TextInjector.focusedElementIsSecure() {
+            privateUtterance = true
+            Log.app.info("private field focused at delivery; this utterance is not kept")
+        }
+        if privateUtterance {
+            await finishPrivately()
+            return
+        }
 
         let formatted = await formatter.run(transcript)
         let text = formatted.text
@@ -412,11 +478,17 @@ final class DictationController {
         case .pushToTalk:
             if text.isEmpty {
                 Log.app.info("empty transcript, nothing to insert")
+            } else if targetMoved {
+                // Typing now would land the text in whatever came to the front meanwhile.
+                // It is on the clipboard and in history regardless.
+                Log.app.info("front app changed since key press; text left on clipboard")
+                hint = "Focus moved. Text is on the clipboard."
             } else {
                 TextInjector.insert(text)
             }
             // Leave the final text visible for a beat so the user sees what was typed.
-            try? await Task.sleep(for: .milliseconds(text.isEmpty ? 150 : 450))
+            try? await Task.sleep(for: .milliseconds(text.isEmpty ? 150 : hint == nil ? 450 : 1500))
+            hint = nil
             hud.hide()
 
         case .session:
@@ -430,9 +502,37 @@ final class DictationController {
         level = 0
     }
 
+    /// Delivery into a password field. The raw transcript is typed as keystrokes and
+    /// then dropped. No formatting either: a secret is not prose, and a capital letter
+    /// or a trailing full stop would corrupt it.
+    private func finishPrivately() async {
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        listeningSince = nil
+        if text.isEmpty {
+            Log.app.info("empty transcript, nothing to type")
+        } else if targetMoved {
+            Log.app.info("front app changed since key press; private text discarded")
+            hint = "Focus moved. Nothing typed."
+        } else {
+            TextInjector.typePrivately(text)
+        }
+        try? await Task.sleep(for: .milliseconds(hint == nil ? 300 : 1500))
+        transcript = ""
+        hint = nil
+        hud.hide()
+        state = .idle
+        level = 0
+    }
+
+    /// True when a different app is frontmost than at key press.
+    private var targetMoved: Bool {
+        guard let targetPID else { return false }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier != targetPID
+    }
+
     /// Tears the pipeline down without producing output.
     private func cancelPipeline() {
-        capture.stop()
+        Task { await stopCapture() }
         feedTask?.cancel()
         updatesTask?.cancel()
         feedTask = nil
@@ -450,7 +550,7 @@ final class DictationController {
 
     private func fail(_ message: String) {
         Log.app.error("\(message, privacy: .public)")
-        capture.stop()
+        Task { await stopCapture() }
         feedTask?.cancel()
         updatesTask?.cancel()
         feedTask = nil
@@ -479,13 +579,12 @@ final class DictationController {
     private func absorbLevel(_ raw: Float) {
         // Fast attack, slow release, so the meter reads as speech rather than noise.
         level = max(raw, level * 0.82)
+        peakLevel = max(peakLevel, raw)
     }
 
     private func copy(_ text: String) {
         guard !text.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        Clipboard.set(text)
         copiedToClipboard = true
         Log.app.info("copied \(text.count, privacy: .public) chars to clipboard")
     }

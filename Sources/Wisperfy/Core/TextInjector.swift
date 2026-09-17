@@ -13,7 +13,10 @@ import Foundation
 /// afterwards on purpose: the controller has already copied the transcript there so the
 /// user can paste it again if the target app swallowed the first paste.
 ///
-/// Both rely on the HUD being a non-activating panel, so focus never leaves the user's app.
+/// Strategy 3 exists for password fields only: the text is typed as keystrokes, so it
+/// never touches the pasteboard, and the controller keeps no copy of it.
+///
+/// All rely on the HUD being a non-activating panel, so focus never leaves the user's app.
 @MainActor
 enum TextInjector {
     static func insert(_ text: String) {
@@ -28,21 +31,36 @@ enum TextInjector {
         }
     }
 
+    /// True when keyboard focus is in a password-style field. Native secure fields and
+    /// WebKit/Chromium password inputs report the `AXSecureTextField` subrole. Terminal
+    /// password prompts do not; there is nothing to detect there.
+    static func focusedElementIsSecure() -> Bool {
+        guard let element = focusedElement() else { return false }
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &ref) == .success,
+              let subrole = ref as? String
+        else { return false }
+        return subrole == kAXSecureTextFieldSubrole
+    }
+
     private enum AXResult {
         case inserted
         case notVerified(String)
     }
 
-    // MARK: - Strategy 1: Accessibility
-
-    private static func insertViaAccessibility(_ text: String) -> AXResult {
+    private static func focusedElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
-
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
               let focusedRef
-        else { return .notVerified("no focused element") }
-        let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
+        else { return nil }
+        return unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
+    }
+
+    // MARK: - Strategy 1: Accessibility
+
+    private static func insertViaAccessibility(_ text: String) -> AXResult {
+        guard let element = focusedElement() else { return .notVerified("no focused element") }
 
         var settable: DarwinBoolean = false
         guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success,
@@ -87,9 +105,7 @@ enum TextInjector {
     // MARK: - Strategy 2: Pasteboard + ⌘V
 
     private static func insertViaPasteboard(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        Clipboard.set(text)
 
         Task { @MainActor in
             // Let the target observe the new pasteboard generation before ⌘V lands.
@@ -111,5 +127,43 @@ enum TextInjector {
         up.flags = .maskCommand
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+
+    // MARK: - Strategy 3: keystrokes, for password fields
+
+    /// One keyboard event carries at most this many UTF-16 units.
+    private static let keystrokeChunk = 20
+
+    /// Types the text as keystrokes. Nothing is put on the pasteboard, and the AX path is
+    /// skipped because a secure field hides its caret, so an insert could not be verified.
+    static func typePrivately(_ text: String) {
+        guard !text.isEmpty, let source = CGEventSource(stateID: .privateState) else { return }
+
+        var buffer: [UniChar] = []
+        func flush() {
+            guard !buffer.isEmpty,
+                  let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+            else { return }
+            buffer.withUnsafeBufferPointer { units in
+                down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units.baseAddress)
+                up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units.baseAddress)
+            }
+            // Explicit flags: the user may still be lifting off the push-to-talk modifier.
+            down.flags = []
+            up.flags = []
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            buffer.removeAll(keepingCapacity: true)
+        }
+
+        // Chunk on character boundaries so a surrogate pair never splits across events.
+        for character in text {
+            let units = Array(String(character).utf16)
+            if buffer.count + units.count > keystrokeChunk { flush() }
+            buffer += units
+        }
+        flush()
+        Log.inject.info("typed privately (\(text.count, privacy: .public) chars)")
     }
 }

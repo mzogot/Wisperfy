@@ -30,6 +30,49 @@ Entry template:
   the compiler infer isolation for a callback that a framework calls off-main.
 - **Where:** `Core/AudioCapture.swift`
 
+### Isolation check crashes in framework callbacks
+- **Seen:** 2026-09-16 twice and 2026-09-17 three times: segfault inside the runtime's
+  "is this the main executor" check, once at the entry of the HUD status dot's
+  `phaseAnimator` closure and four times at the entry of the `CGEventTap` callback.
+  Same bad address every time. The first press after launch worked; a later one
+  crashed. Removing `assumeIsolated` did not help, and neither did building against
+  the OS-matching SDK: the crash moved to the compiler's own check at closure entry.
+- **Cause:** the Swift 6.4 compiler (Command Line Tools 27.0, installed 2026-09-10)
+  emits a runtime isolation check at the entry of nearly every closure formed in an
+  actor-isolated context, including plain `filter` closures. `otool -tV` on the binary
+  showed over a hundred call sites. In ordinary actor code the check takes its fast
+  path. A closure invoked from a raw run-loop source (the event tap) or from SwiftUI's
+  animation machinery has no task context, and there the OS 26.6 runtime's slow path
+  dereferences a bad executor pointer. Every crash came after the toolchain update.
+- **Rule:** three layers. (1) `Package.swift` passes `-disable-dynamic-actor-isolation`
+  for the app target; Swift 6 language mode still checks isolation statically, and the
+  binary now has no check sites (verify with
+  `otool -tV <binary> | grep -c swift_task_isCurrentExecutor`). (2) Callbacks a
+  framework invokes are never closures formed inside a `@MainActor` type: the tap
+  callback is a file-scope function, the audio tap and animation closures are
+  `@Sendable`, and they hop to the main actor with a `Task`. (3) The Makefile builds
+  against the newest SDK not newer than the running OS.
+- **Where:** `Package.swift`, `Makefile`, `Core/HotkeyMonitor.swift`,
+  `UI/HUDView.swift`, `UI/HUDPanel.swift`, `UI/SessionPanel.swift`
+
+### The app froze starting the microphone while AirPods reconnected
+- **Seen:** 2026-09-17, third push-to-talk in a row: HUD stuck, hotkey dead, 45 % CPU.
+  `sample` showed the main thread inside `AVAudioEngine.prepare()` waiting on the
+  engine's IO-unit queue, which was spinning on a property change; the system log had
+  thousands of "agg device … sub-device #channels = 0" lines. coreaudiod had switched
+  the default input to the AirPods two seconds earlier.
+- **Cause:** `AudioCapture` was main-actor code calling `prepare()`/`start()` on the
+  main thread, and it reused one `AVAudioEngine`, whose IO unit stayed bound to the
+  device that was in transition.
+- **Rule:** `AudioCapture` is an actor and creates a fresh `AVAudioEngine` per capture.
+  The controller wraps start in `valueWithTimeout` (4 s) and stop in `awaitWithTimeout`
+  (2 s); on a start timeout it abandons that instance, tells it to stop whenever it
+  wakes up, and creates a new one, so the next utterance works. The user sees
+  "Microphone did not start" instead of a frozen app. Nothing in the app calls
+  CoreAudio from the main thread anymore.
+- **Where:** `Core/AudioCapture.swift`, `Core/DictationController.swift`
+  (`startCapture`, `stopCapture`)
+
 ### A Task per audio buffer scrambles transcripts
 - **Seen:** 2026-09-16, words out of order in the transcript, no error anywhere.
 - **Cause:** tasks are not FIFO. Chunks fed from separate tasks reach the engine in
@@ -135,9 +178,24 @@ Entry template:
 - **Rule:** pure logic gets a test in `Tests/WisperfyTests`. Run with `make test`.
   An async test that uses `#require` must be declared `throws`.
 
-### Deprecated Foundation Models initialiser
-- **Seen:** 2026-09-16, warning on `GenerationOptions(sampling:)`.
-- **Rule:** use `GenerationOptions(samplingMode: .greedy)`. The project builds with
+### Swift 6.4 CLT: "plugin for module 'TestingMacros' not found"
+- **Seen:** 2026-09-16 and again 2026-09-17, every `@Suite` / `@Test` failed to compile
+  whenever the test module was built fresh (new test file, sources changed).
+- **Cause:** the Testing macro plugin lives in `usr/lib/swift/host/plugins/testing/`, a
+  subfolder the build does not always search (`plugins/` itself holds the Observation
+  macros, which is why the app keeps building). Once the module has been compiled with
+  the path given, plain `swift test` passes again on the same scratch, which made it
+  look like stale state.
+- **Rule:** `make test` passes `-Xswiftc -plugin-path -Xswiftc <that folder>` when the
+  folder exists, so the first run works too. Do not switch to `--build-system native`:
+  it then loses the Testing framework search path as well and needs three more flags.
+- **Where:** `Makefile` (`TESTING_PLUGINS`)
+
+### Foundation Models initialiser label differs between SDKs
+- **Seen:** 2026-09-16, warning on `GenerationOptions(sampling:)` (that was the 27.0
+  SDK deprecating it); 2026-09-17, `samplingMode:` does not exist in the 26.5 SDK.
+- **Rule:** the project builds against the OS-matching SDK (see above), so the label is
+  `sampling:`. Switch to `samplingMode:` only when the minimum OS becomes 27. The project builds with
   zero code warnings; keep it that way.
 
 ### Apple Intelligence is off on the development Mac

@@ -165,11 +165,7 @@ final class TranscriptHistory {
     /// Runs off the main actor: a nonisolated async function executes on the global pool.
     private nonisolated static func write(_ data: Data, to url: URL) async {
         do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: url, options: .atomic)
+            try PrivateFile.write(data, to: url)
         } catch {
             Log.app.error("history: write failed: \(error.localizedDescription, privacy: .public)")
         }

@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Foundation
+import os
 
 /// The modifier key that holds the microphone open.
 enum PushToTalkKey: String, CaseIterable, Identifiable, Sendable {
@@ -48,16 +49,34 @@ enum PushToTalkKey: String, CaseIterable, Identifiable, Sendable {
 ///
 /// A tap is the only API that distinguishes Right ⌥ from Left ⌥ and can see fn.
 /// It requires the Accessibility grant; without it `tapCreate` returns nil.
+///
+/// The tap callback runs on the main thread but outside any actor context, and it has
+/// crashed three times inside the runtime's "am I on the main actor" check (see
+/// docs/LESSONS.md, "Isolation check crashes in framework callbacks"). So the callback
+/// never asks: it decides press/release from lock-protected state without touching the
+/// main actor, and hands the result over with a Task.
 @MainActor
 final class HotkeyMonitor {
-    var key: PushToTalkKey = .rightOption
+    var key: PushToTalkKey = .rightOption {
+        didSet {
+            let key = key
+            tapState.withLock { $0.key = key; $0.isPressed = false }
+        }
+    }
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
 
     private(set) var isRunning = false
-    private var tap: CFMachPort?
+    /// Read from the tap callback to re-enable a tap macOS switched off. Written only
+    /// on the main actor, before the tap is enabled and after it is disabled.
+    nonisolated(unsafe) private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var isPressed = false
+
+    private struct TapState {
+        var key: PushToTalkKey
+        var isPressed = false
+    }
+    private let tapState = OSAllocatedUnfairLock(initialState: TapState(key: .rightOption))
 
     /// - Returns: false when the tap could not be created (almost always missing Accessibility).
     @discardableResult
@@ -72,20 +91,7 @@ final class HotkeyMonitor {
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
-            callback: { _, type, event, refcon in
-                guard let refcon else { return Unmanaged.passUnretained(event) }
-                let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
-
-                // Pull plain values out before crossing into actor-isolated code; CGEvent
-                // is not Sendable. The tap is scheduled on the main run loop, so this
-                // callback runs on the main thread.
-                let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-                let flags = event.flags
-                let swallow = MainActor.assumeIsolated {
-                    monitor.handle(type: type, keyCode: keyCode, flags: flags)
-                }
-                return swallow ? nil : Unmanaged.passUnretained(event)
-            },
+            callback: hotkeyTapCallback,
             userInfo: refcon
         ) else {
             Log.hotkey.error("event tap creation failed; Accessibility not granted?")
@@ -108,25 +114,51 @@ final class HotkeyMonitor {
         if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
         tap = nil
         runLoopSource = nil
-        isPressed = false
+        tapState.withLock { $0.isPressed = false }
         isRunning = false
     }
 
+    /// The tap callback proper. No actor isolation, no isolation check.
     /// - Returns: true if the event should be swallowed instead of passed on.
-    private func handle(type: CGEventType, keyCode: Int64, flags: CGEventFlags) -> Bool {
+    nonisolated fileprivate func tapped(type: CGEventType, keyCode: Int64, flags: CGEventFlags) -> Bool {
         // macOS disables a tap it thinks is too slow; re-enable and carry on.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }
+        guard type == .flagsChanged else { return false }
 
-        guard type == .flagsChanged, keyCode == key.keyCode else { return false }
+        // (pressed, swallow) for a real transition of our key, nil otherwise.
+        let transition: (pressed: Bool, swallow: Bool)? = tapState.withLock { state in
+            guard keyCode == state.key.keyCode else { return nil }
+            let pressedNow = flags.contains(state.key.deviceFlag)
+            guard pressedNow != state.isPressed else { return nil }
+            state.isPressed = pressedNow
+            return (pressedNow, state.key.consumesEvent)
+        }
+        guard let transition else { return false }
 
-        let pressedNow = flags.contains(key.deviceFlag)
-        guard pressedNow != isPressed else { return false }
-        isPressed = pressedNow
-
-        if pressedNow { onPress?() } else { onRelease?() }
-        return key.consumesEvent
+        Task { @MainActor in
+            if transition.pressed { self.onPress?() } else { self.onRelease?() }
+        }
+        return transition.swallow
     }
+}
+
+/// The C callback handed to `CGEvent.tapCreate`. A file-scope function, not a closure
+/// inside the `@MainActor` class: a closure formed there is inferred main-actor isolated
+/// and the compiler emits a runtime isolation check at its entry, which crashed when the
+/// tap fired from the run loop with no task context (docs/LESSONS.md).
+private func hotkeyTapCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
+    let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+    let flags = event.flags
+    let swallow = monitor.tapped(type: type, keyCode: keyCode, flags: flags)
+    return swallow ? nil : Unmanaged.passUnretained(event)
 }

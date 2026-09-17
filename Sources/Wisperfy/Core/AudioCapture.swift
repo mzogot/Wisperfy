@@ -1,5 +1,6 @@
 import AVFoundation
 import Accelerate
+import AudioToolbox
 import Foundation
 
 /// A PCM buffer the capture layer owns outright. Safe to send across isolation only
@@ -11,35 +12,64 @@ struct AudioChunk: @unchecked Sendable {
 enum AudioCaptureError: LocalizedError {
     case noInputDevice
     case converterUnavailable
+    case startTimedOut
 
     var errorDescription: String? {
         switch self {
         case .noInputDevice: "No microphone is available."
         case .converterUnavailable: "The microphone format cannot be converted for the speech engine."
+        case .startTimedOut: "Microphone did not start. Check Sound ▸ Input in System Settings."
         }
     }
 }
 
 /// Microphone capture with on-the-fly conversion to the speech engine's format.
 ///
+/// An actor, not main-actor code: `AVAudioEngine.prepare()` and `start()` block on
+/// CoreAudio, and during an input-device switch (AirPods connecting or dropping) that
+/// block has lasted forever. On the main thread it froze the whole app. Here it only
+/// blocks this actor, and the controller gives up on it after a timeout.
+///
+/// A fresh engine is created for every capture. A reused engine keeps its IO unit bound
+/// to whatever device it last saw, and that unit is what spun on a vanished device.
+///
 /// The tap callback runs on a real-time audio thread. Everything it touches lives in
 /// `Pipeline`, which is only ever used from that thread while capture is running.
-@MainActor
-final class AudioCapture {
-    private let engine = AVAudioEngine()
+actor AudioCapture {
+    private var engine: AVAudioEngine?
     private var continuation: AsyncStream<AudioChunk>.Continuation?
     private(set) var isRunning = false
 
     /// Starts capture and returns an *ordered* stream of converted buffers.
     ///
-    /// - Parameter onLevel: Called on the audio thread with a 0…1 loudness value.
+    /// - Parameters:
+    ///   - microphone: which device to capture from; resolved here, off the main thread.
+    ///   - onLevel: Called on the audio thread with a 0…1 loudness value.
     func start(
         format: AVAudioFormat,
+        microphone: MicrophoneChoice,
         onLevel: @escaping @Sendable (Float) -> Void
     ) throws -> AsyncStream<AudioChunk> {
         guard !isRunning else { throw AudioCaptureError.noInputDevice }
 
+        let engine = AVAudioEngine()
+        self.engine = engine
         let input = engine.inputNode
+
+        // Pin the IO unit to the chosen device before anything reads its format.
+        let chosen = AudioDevices.resolve(microphone)
+        if let chosen, let unit = input.audioUnit {
+            var deviceID = chosen.id
+            let status = AudioUnitSetProperty(
+                unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+            if status != noErr {
+                Log.audio.error("could not select \(chosen.name, privacy: .public) (\(status, privacy: .public)); using the system default input")
+            }
+        }
+        let sourceName = chosen?.name ?? AudioDevices.defaultInput()?.name ?? "system default input"
+
         let native = input.outputFormat(forBus: 0)
         guard native.sampleRate > 0, native.channelCount > 0 else {
             throw AudioCaptureError.noInputDevice
@@ -76,14 +106,15 @@ final class AudioCapture {
         engine.prepare()
         try engine.start()
         isRunning = true
-        Log.audio.info("capture started: \(native.sampleRate, privacy: .public) Hz → \(format.sampleRate, privacy: .public) Hz")
+        Log.audio.info("capture started from \(sourceName, privacy: .public): \(native.sampleRate, privacy: .public) Hz → \(format.sampleRate, privacy: .public) Hz")
         return stream
     }
 
     func stop() {
         guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
         continuation?.finish()
         continuation = nil
         isRunning = false
@@ -178,7 +209,7 @@ final class AudioCapture {
             return copy
         }
 
-        /// RMS of channel 0 mapped from roughly −50…0 dBFS onto 0…1.
+    /// RMS of channel 0 mapped from roughly −50…0 dBFS onto 0…1.
         private static func loudness(of buffer: AVAudioPCMBuffer) -> Float {
             guard let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
             var rms: Float = 0

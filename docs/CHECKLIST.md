@@ -54,8 +54,41 @@ Watch `make logs` in a second terminal throughout.
 - [ ] Russian dictation logs `skipped: … not supported` and still delivers text.
 - [ ] Toggle off: no `polish` log lines, delivery unchanged.
 
+## Security and privacy
+- [ ] Focus a password field (System Settings ▸ Users & Groups ▸ change password, or a
+      browser login form), hold the key, say a word, release: HUD shows "Listening,
+      private field…" and never the words; the field receives the text; log shows
+      `private field focused` and `typed privately`; nothing on the clipboard, no
+      history entry, no `polish` lines.
+- [ ] Same in Terminal at a `sudo` prompt: not detected (expected); text is typed the
+      normal way and does land in history.
+- [ ] Hold the key, speak, and ⌘-Tab to another app before releasing: nothing is typed
+      into the second app; HUD shows "Focus moved. Text is on the clipboard."; log
+      shows `front app changed`; history has the entry.
+- [ ] `ls -l ~/Library/Application\ Support/Wisperfy/`: folder `drwx------`, both
+      files `-rw-------` after a dictation and a vocabulary edit.
+- [ ] Toggle "Hide from Clipboard Managers" on, dictate, check a clipboard manager
+      (Maccy, Raycast): the transcript is not in its history; ⌘V still pastes it.
+      Toggle off: the next transcript appears in the manager again.
+- [ ] `make logs` during a full run: no line contains dictated words.
+
+## Menu
+- [ ] About Wisperfy: the standard About panel opens in front and shows the version
+      from Info.plist and the build; a dev build reads `(n dev <sha>+)`, a release
+      build the plain number matching `## [x.y.z]` at the top of CHANGELOG.md.
+
 ## Robustness
 - [ ] Tap with almost no audio: finishes within the timeout, log may show
       `finalize timed out`, app stays responsive.
+- [ ] Microphone picker: with AirPods connected and "Built-in Microphone" selected,
+      dictation captures from the MacBook mic (log says so) and text arrives. Select
+      the AirPods in the picker: log names them and dictation works through them.
+      Disconnect them: picker shows "Saved microphone (not connected)" and capture
+      falls back to the system default with a log line.
+- [ ] Put AirPods in (or connect any Bluetooth headset) and press the key within a
+      second or two: either dictation works from the headset, or the HUD shows
+      "Microphone did not start" and the next press works. The app never freezes.
+- [ ] Take the AirPods out mid-utterance: the utterance ends without a freeze; the
+      log shows `capture stopped` within a few seconds.
 - [ ] Quit and relaunch: history and vocabulary persist; window frames restored.
 - [ ] No crash report in `~/Library/Logs/DiagnosticReports` after the run.

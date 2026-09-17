@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// The menu bar dropdown. Deliberately small: status, actions, history, vocabulary,
-/// four settings, quit.
+/// six settings, about, quit.
 struct MenuContent: View {
     let controller: DictationController
     @Bindable private var settings = Settings.shared
@@ -65,11 +65,24 @@ struct MenuContent: View {
                 Text(engine.label).tag(engine)
             }
         }
+        Picker("Microphone", selection: $settings.microphone) {
+            Text("Built-in Microphone").tag(MicrophoneChoice.builtIn)
+            Text("System Default").tag(MicrophoneChoice.systemDefault)
+            let devices = AudioDevices.inputDevices()
+            if !devices.isEmpty { Divider() }
+            ForEach(devices) { device in
+                Text(device.name).tag(MicrophoneChoice.device(uid: device.uid))
+            }
+            if case .device(let uid) = settings.microphone, !devices.contains(where: { $0.uid == uid }) {
+                Text("Saved microphone (not connected)").tag(settings.microphone)
+            }
+        }
         Toggle("Polish with Apple Intelligence", isOn: $settings.polish)
             .disabled(!PolishFormatter.isAvailable)
         if let reason = PolishFormatter.unavailableReason {
             Text(reason)
         }
+        Toggle("Hide from Clipboard Managers", isOn: $settings.concealClipboard)
 
         Divider()
 
@@ -82,6 +95,11 @@ struct MenuContent: View {
 
         Divider()
 
+        Button("About Wisperfy") {
+            // An LSUIElement app opens windows behind everything unless activated first.
+            NSApp.activate()
+            NSApp.orderFrontStandardAboutPanel(nil)
+        }
         Button("Quit Wisperfy") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }

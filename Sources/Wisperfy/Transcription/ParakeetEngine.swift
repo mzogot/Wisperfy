@@ -138,6 +138,8 @@ actor ParakeetModelStore {
 
     private var manager: AsrManager?
     private var loading: Task<AsrManager, Error>?
+    /// The only host the model is ever fetched from.
+    private static let modelHost = "https://huggingface.co"
 
     /// True once the model files are on disk. Filesystem-based so the UI can show the
     /// "downloading" hint before anything is loaded.
@@ -153,6 +155,9 @@ actor ParakeetModelStore {
             let stage = Self.isDownloaded ? "loading from disk" : "downloading (one time)"
             Log.speech.info("Parakeet: \(stage, privacy: .public)")
             let started = ContinuousClock.now
+            // FluidAudio otherwise honours REGISTRY_URL / MODEL_REGISTRY_URL from the
+            // environment. Set the host explicitly so nothing inherited can redirect it.
+            ModelRegistry.baseURL = Self.modelHost
             let models = try await AsrModels.downloadAndLoad(version: .v3)
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)

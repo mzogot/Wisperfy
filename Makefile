@@ -12,6 +12,26 @@ BINARY    := $(SCRATCH)/$(CONFIG)/$(EXEC)
 BUNDLE    := $(STAGE)/$(APP).app
 CONTENTS  := $(BUNDLE)/Contents
 
+# Build against the newest SDK that is not newer than the running macOS. The Command
+# Line Tools can ship a newer SDK than the OS (27.0 on 26.6 in September 2026), and code
+# compiled against it crashed inside the concurrency runtime's isolation checks. See
+# docs/LESSONS.md, "Isolation check crashes in framework callbacks".
+SDKS       := /Library/Developer/CommandLineTools/SDKs
+OS_VERSION := $(shell sw_vers -productVersion)
+SDK_PATH   := $(shell python3 -c 'import os, re; d = "$(SDKS)"; \
+    osv = tuple(int(x) for x in "$(OS_VERSION)".split(".")[:2]); \
+    found = [(tuple(int(x) for x in m.group(1).split(".")), f) for f in os.listdir(d) \
+             for m in [re.match(r"^MacOSX(\d+\.\d+)\.sdk$$", f)] if m and not os.path.islink(os.path.join(d, f))]; \
+    ok = [t for t in found if t[0] <= osv]; \
+    print(os.path.join(d, max(ok)[1]) if ok else "")' 2>/dev/null)
+# `make dmg SDK=26.5` forces a specific SDK. While macOS 26 is supported, releases are
+# built with the oldest supported SDK even on a newer Mac, so the binary is exercised
+# the way the oldest users run it.
+ifneq ($(strip $(SDK)),)
+SDK_PATH := $(SDKS)/MacOSX$(SDK).sdk
+endif
+SDK_FLAG   := $(if $(SDK_PATH),--sdk "$(SDK_PATH)",)
+
 # macOS ties Accessibility and Microphone grants to the code signature. An ad-hoc
 # signature changes on every build, which silently invalidates the grant while the
 # toggle still shows as on. A Developer ID signature is stable, so grants stick.
@@ -36,16 +56,28 @@ VERSION_NEW := $(VERSION)
 override VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.0.0)
 DMG     := $(STAGE)/$(APP)-$(VERSION).dmg
 
-.PHONY: all build test app run install clean logs reset-permissions icon dmg notarize bump release
+.PHONY: all build test lint-logs app run install clean logs reset-permissions icon dmg notarize bump release
 
 all: app
 
 build:
-	swift build -c $(CONFIG) --scratch-path "$(SCRATCH)"
+	@echo "SDK: $(if $(SDK_PATH),$(SDK_PATH),toolchain default)"
+	swift build -c $(CONFIG) --scratch-path "$(SCRATCH)" $(SDK_FLAG)
 
 ## Unit tests for the pure pieces (formatting, vocabulary, correction diffs).
-test:
-	swift test --scratch-path "$(SCRATCH)"
+## Swift 6.4 CLT keep the Swift Testing macro plugin in a `testing` subfolder that the
+## build does not search on its own; point at it when it exists (see docs/LESSONS.md).
+TESTING_PLUGINS := $(shell xcrun --find swift 2>/dev/null | sed 's|/bin/swift$$||')/lib/swift/host/plugins/testing
+TEST_FLAGS := $(if $(wildcard $(TESTING_PLUGINS)),-Xswiftc -plugin-path -Xswiftc "$(TESTING_PLUGINS)",)
+test: lint-logs
+	swift test --scratch-path "$(SCRATCH)" $(SDK_FLAG) $(TEST_FLAGS)
+
+## Transcript text must never reach the unified log. Fails on any Log call that
+## interpolates a text-carrying variable; character counts (`text.count`) are fine.
+lint-logs:
+	@! grep -rnE 'Log\.[a-z]+\.[a-z]+\(.*\\\((text|transcript|sessionText|raw|polished|draft|entry\.text)[,)]' Sources \
+		|| { echo "transcript text interpolated into a log line (see above)"; exit 1; }
+	@echo "lint-logs: no transcript text in log lines"
 
 ## Assemble a real .app bundle. TCC keys permissions on bundle identity and signature,
 ## so the bare SwiftPM binary cannot be used directly.
@@ -56,6 +88,15 @@ app: build
 	@# SwiftPM resource bundles of dependencies must travel with the binary.
 	@for b in "$(SCRATCH)/$(CONFIG)"/*.bundle; do [ -d "$$b" ] && cp -R "$$b" "$(CONTENTS)/Resources/" || true; done
 	@cp Resources/Info.plist "$(CONTENTS)/Info.plist"
+	@# Dev builds carry the commit in the build number, so About tells a dev build from
+	@# the release with the same version: "0.2.0 (2 dev 5a93776+)"; "+" means uncommitted
+	@# changes. Release builds keep the plain number from Info.plist.
+	@if [ "$(CONFIG)" != "release" ]; then \
+		sha=$$(git rev-parse --short HEAD 2>/dev/null || echo nogit); \
+		dirty=$$(test -z "$$(git status --porcelain 2>/dev/null)" || echo "+"); \
+		build=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist); \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $$build dev $$sha$$dirty" "$(CONTENTS)/Info.plist"; \
+	fi
 	@if [ -f Resources/AppIcon.icns ]; then cp Resources/AppIcon.icns "$(CONTENTS)/Resources/"; fi
 	@# Apache 2.0 (FluidAudio) asks that the license travel with the binary.
 	@cp LICENSE THIRD_PARTY_NOTICES.md "$(CONTENTS)/Resources/"
@@ -85,6 +126,7 @@ install: app
 ## recipient must right-click > Open once, or approve it in System Settings > Privacy &
 ## Security. Run `make notarize` afterwards to remove that step (needs credentials, see below).
 dmg:
+	@test "$(SIGN_ID)" != "-" || { echo "no Developer ID Application certificate in the keychain; refusing to build a shareable image with an ad-hoc signature"; exit 1; }
 	@$(MAKE) app CONFIG=release
 	@rm -rf "$(STAGE)/dmgroot" "$(DMG)"
 	@mkdir -p "$(STAGE)/dmgroot"

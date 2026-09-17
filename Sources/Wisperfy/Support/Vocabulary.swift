@@ -339,11 +339,7 @@ final class Vocabulary {
     /// mistake our own save for an outside edit.
     private nonisolated static func write(_ data: Data, to url: URL) async -> Date? {
         do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: url, options: .atomic)
+            try PrivateFile.write(data, to: url)
             return modificationDate(of: url)
         } catch {
             Log.app.error("vocabulary: write failed: \(error.localizedDescription, privacy: .public)")

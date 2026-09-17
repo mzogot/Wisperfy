@@ -63,6 +63,8 @@ final class Settings {
         static let language = "language"
         static let engine = "engine"
         static let polish = "polish"
+        static let concealClipboard = "concealClipboard"
+        static let microphone = "microphone"
     }
 
     var pushToTalkKey: PushToTalkKey {
@@ -83,6 +85,18 @@ final class Settings {
         didSet { defaults.set(polish, forKey: Key.polish) }
     }
 
+    /// Mark clipboard writes as concealed so cooperating clipboard managers skip them.
+    /// Off by default: with a manager that honours it, the "one ⌘V away" safety net is
+    /// gone as soon as the user copies something else.
+    var concealClipboard: Bool {
+        didSet { defaults.set(concealClipboard, forKey: Key.concealClipboard) }
+    }
+
+    /// Which microphone to capture from. Built-in by default, see `MicrophoneChoice`.
+    var microphone: MicrophoneChoice {
+        didSet { defaults.set(microphone.rawValue, forKey: Key.microphone) }
+    }
+
     private init() {
         pushToTalkKey = PushToTalkKey(rawValue: defaults.string(forKey: Key.pushToTalkKey) ?? "")
             ?? .rightOption
@@ -91,5 +105,7 @@ final class Settings {
         engine = EnginePreference(rawValue: defaults.string(forKey: Key.engine) ?? "")
             ?? .auto
         polish = defaults.object(forKey: Key.polish) as? Bool ?? true
+        concealClipboard = defaults.bool(forKey: Key.concealClipboard)
+        microphone = MicrophoneChoice(rawValue: defaults.string(forKey: Key.microphone) ?? "")
     }
 }

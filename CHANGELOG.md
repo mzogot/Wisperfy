@@ -10,10 +10,51 @@ Every release starts by moving the Unreleased section into a new version heading
 
 ## [Unreleased]
 
+### Added
+
+- Password fields are private: when the focused control is a secure text field, the
+  dictation is typed as keystrokes and nothing is kept (no HUD text, no formatting, no
+  clipboard, no history).
+- "Hide from Clipboard Managers" menu setting marks transcripts as concealed so
+  cooperating clipboard managers do not archive them. Off by default.
+- A Security section in the README describing the September 2026 code review and the
+  measures in place.
+- `make test` fails if transcript text is ever interpolated into a log line.
+- "About Wisperfy" in the menu shows the version and build number.
+- Microphone setting in the menu: Built-in Microphone (default), System Default, or a
+  specific input device. AirPods and other headsets no longer take over dictation
+  just by connecting; pick them explicitly if you want them.
+- The log records the peak input level of every utterance, so a silent microphone is
+  visible at a glance.
+
 ### Changed
 
+- Text is only typed into the app that was frontmost when the key was pressed. If
+  another app has come to the front by delivery time, nothing is typed; the text stays
+  on the clipboard and in history and the HUD says so.
+- history.json and vocabulary.json are written with user-only permissions (0600 in a
+  0700 folder).
+- The Parakeet model download is pinned to huggingface.co; FluidAudio is pinned to an
+  exact version.
+- `make dmg` refuses to build a shareable image without a Developer ID certificate.
 - `make bump` edits only the two version values in Info.plist instead of rewriting
   the file; `make release` trims the leading blank line from the release notes.
+
+### Fixed
+
+- Intermittent crashes on key press and when the HUD appeared, introduced by the
+  Swift 6.4 toolchain's runtime actor-isolation checks misfiring in framework
+  callbacks. Those checks are now compiled out (static checking remains), the hotkey
+  tap callback lives outside the main-actor class, animation closures are Sendable,
+  and the build targets the SDK matching the running macOS.
+- The "capture started" log line now names the input device, so a Bluetooth headset
+  silently taking over the microphone is visible at a glance.
+- The app no longer freezes when the microphone is switching devices (AirPods
+  connecting or dropping) at the moment the key is pressed. Capture runs off the main
+  thread with a fresh audio engine per utterance, and a start that takes longer than
+  four seconds shows "Microphone did not start" instead of hanging.
+- `make test` works again on Swift 6.4 Command Line Tools, which moved the Swift
+  Testing macro plugin.
 
 ## [0.2.0] - 2026-09-17
 

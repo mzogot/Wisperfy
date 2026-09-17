@@ -29,11 +29,12 @@ make install     # build, bundle, sign, copy to /Applications, launch
 ```
 
 Needs a Swift 6 toolchain; the Xcode Command Line Tools are enough, Xcode is not needed.
-A Developer ID certificate is auto-detected for signing. Without one the build is
+A Developer ID certificate is auto-detected for signing. Without one a local build is
 signed ad hoc, which works but macOS forgets the permission grants on every rebuild.
 `make dmg` and `make notarize` produce the release image (see the Makefile for the
-credentials file it expects). Releases are cut with `make bump` and `make release`;
-see [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+credentials file it expects); `make dmg` refuses to run without a Developer ID.
+Releases are cut with `make bump` and `make release`; see [CHANGELOG.md](CHANGELOG.md)
+for what changed in each version.
 
 ## First run
 
@@ -50,6 +51,10 @@ grant on its own; no relaunch needed. Tap the key instead of holding it to open 
 If you choose **fn** as the key, set System Settings ▸ Keyboard ▸ "Press fn key to" to
 **Do Nothing**, otherwise macOS also opens its own emoji or dictation panel on every tap.
 
+Wisperfy captures from the **built-in microphone** by default, even when AirPods or
+another headset are connected, because macOS otherwise routes input to the headset the
+moment it connects. Pick a different device under Microphone in the menu.
+
 Other targets: `make run` (run from the build cache), `make logs` (live log stream),
 `make reset-permissions` (resets only this app's grants), `make clean`.
 
@@ -65,8 +70,53 @@ and correct them:
 | `~/Library/Application Support/Wisperfy/history.json` | the last 500 transcripts |
 | `~/Library/Application Support/Wisperfy/vocabulary.json` | your terms and their misheard variants |
 
-Delete either file to clear it. Uninstall by dragging Wisperfy out of Applications and
+Both files are readable by your user account only (mode 0600 in a 0700 folder). Delete
+either file to clear it. Uninstall by dragging Wisperfy out of Applications and
 removing that folder.
+
+Two things are never kept: audio, and anything dictated into a **password field**. When
+the focused control is a secure text field (a login form, a website's password box) the words
+are typed as keystrokes and forgotten: not shown in the HUD, not formatted, not copied
+to the clipboard, not written to history.
+
+Everything else lands on the clipboard on purpose, so a paste the target app dropped is
+one ⌘V away. If you run a clipboard manager and would rather it did not archive your
+dictation, turn on **Hide from Clipboard Managers** in the menu: transcripts are then
+marked concealed, which Maccy, Paste, Alfred, Raycast and 1Password honour.
+
+## Security
+
+Wisperfy runs unsandboxed with Accessibility and Microphone access, which is a lot of
+trust to hand a menu bar app. The code was reviewed for that in September 2026 (a full
+source audit, trust boundaries traced from audio, the two JSON files, the clipboard,
+the focused app's accessibility tree and the model download to every sink). It found
+no exploitable vulnerability. What the app does to stay that way:
+
+- **The hotkey tap sees modifier keys only.** The event tap is masked to `flagsChanged`
+  and reads keycode and flags; it cannot observe keystrokes, so it cannot become a
+  keylogger by accident.
+- **Transcripts never reach the system log.** Every log line carries a character count,
+  not the text, and `make test` fails if a text variable is ever interpolated into one.
+- **Hardened runtime, one entitlement.** The bundle is signed with `--options runtime`,
+  the entitlements file grants only microphone input, and there are no exceptions to
+  App Transport Security. A shareable image cannot be built with an ad-hoc signature.
+- **Password fields are never recorded** (see Privacy above), and text is only ever
+  typed into the app that was in front when you pressed the key. If another app has
+  come to the front by the time transcription finishes, nothing is typed; the text
+  stays on the clipboard and in history.
+- **Files are private.** History and vocabulary are written with user-only permissions.
+- **One network host, one pinned dependency.** The only network access is the Parakeet
+  model download, which the app pins to `https://huggingface.co` regardless of
+  environment overrides. FluidAudio is pinned to an exact version, so a bump is always
+  a reviewed diff. FluidAudio itself verifies the download by file presence, not by
+  hash; that is upstream work.
+- **Input is validated.** Both JSON files decode through `Codable` with defaults, a
+  broken file blocks writes instead of being overwritten, and vocabulary terms are
+  escaped before they become regular expressions. The polish model runs with no tools,
+  under a timeout, and its output is discarded unless it is close to the input length.
+
+If you find a security problem, please open an issue or contact the author directly
+rather than posting an exploit.
 
 ## Languages and engines
 

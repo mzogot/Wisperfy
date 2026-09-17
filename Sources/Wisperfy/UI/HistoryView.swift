@@ -253,9 +253,7 @@ struct HistoryView: View {
     // MARK: - Actions
 
     private func copy(_ entry: TranscriptEntry) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(entry.text, forType: .string)
+        Clipboard.set(entry.text)
         Log.app.info("history: copied \(entry.text.count, privacy: .public) chars to clipboard")
     }
 
