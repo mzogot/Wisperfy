@@ -28,7 +28,8 @@ on-device with no cloud, no account and no cost. macOS only; Windows is out of s
 ```
 Wisperfy/
 ├── Package.swift              SwiftPM manifest, macOS 26, Swift 6 strict concurrency
-├── Makefile                   build → bundle → sign → install (the only supported build path)
+├── Makefile                   build → bundle → sign → install (the only supported build path;
+│                              picks the SDK matching the running macOS, `SDK=x.y` overrides)
 ├── CHANGELOG.md               Keep a Changelog format; every release starts here
 ├── Resources/                 Info.plist, entitlements, AppIcon.icns (regenerate: `make icon`
 │                              from Icon/MakeIcon.swift; edit the script, not the .icns)
@@ -44,7 +45,8 @@ Wisperfy/
     │                          HistoryWindow + HistoryView (past transcripts, editable),
     │                          VocabularyWindow + VocabularyView, CorrectionReviewView
     └── Support/               Settings, Permissions, Log, Timeout, TranscriptHistory, Vocabulary,
-                               Clipboard (the only pasteboard writer), PrivateFile (0600 writes)
+                               Clipboard (the only pasteboard writer), PrivateFile (0600 writes),
+                               AudioDevices (read-only HAL queries, MicrophoneChoice)
 ```
 
 ## File Structure
@@ -87,11 +89,14 @@ Changelog and version first, everything else after. Never tag or upload by hand.
    the compare links and sets `CFBundleShortVersionString` (+1 on `CFBundleVersion`).
    Patch = fixes only, minor = new behaviour; major stays 0 until the app is stable.
 3. Review, fill in anything missing, commit as `release: x.y.z`.
-4. `make release` refuses to run on a dirty tree, a missing or empty changelog section,
-   or an existing tag. While macOS 26 is still supported, cut releases with the oldest
-   supported SDK (`make release SDK=26.5`) even on a newer Mac; the Makefile otherwise
-   picks the newest SDK not newer than the running OS. Then: `dmg` → `notarize` → `git tag vx.y.z` → push → GitHub
-   release with the changelog section as notes and the DMG attached.
+4. `make release SDK=26.5` refuses to run on a dirty tree, a missing or empty changelog
+   section, or an existing tag. Then: `dmg` → `notarize` → `git tag vx.y.z` → push →
+   GitHub release with the changelog section as notes and the DMG attached.
+   The `SDK=` override matters: while macOS 26 is supported, releases are built with
+   the oldest supported SDK even on a newer Mac. Without it the Makefile picks the
+   newest SDK not newer than the running OS, which is right for dev builds only.
+5. Install the release build locally with `make install CONFIG=release SDK=26.5`, so
+   About shows the plain version instead of a dev stamp.
 
 Public repo: https://github.com/mzogot/Wisperfy. Notarization credentials live in
 `.env.release.local` (gitignored).
@@ -196,10 +201,12 @@ Decisions that look odd and are load-bearing:
 
 ## Tech Stack
 
-- Swift 6.4, SwiftUI + AppKit, SwiftPM (`swift-tools-version: 6.2`), macOS 26+
+- Swift 6.4 from Command Line Tools 27.0, SwiftUI + AppKit, SwiftPM
+  (`swift-tools-version: 6.2`), macOS 26+, built against the macOS 26.5 SDK for
+  releases (the 27.0 SDK also compiles; `PolishFormatter` has the one API that differs)
 - Apple `SpeechAnalyzer` / `SpeechTranscriber` (Speech.framework, macOS 26)
-- FluidAudio ≥ 0.15.7 for Parakeet TDT 0.6B v3 (CoreML, ~500 MB, cached in
-  `~/Library/Application Support/FluidAudio/Models/`)
+- FluidAudio pinned exactly to 0.15.7 for Parakeet TDT 0.6B v3 (CoreML, ~500 MB,
+  cached in `~/Library/Application Support/FluidAudio/Models/`); bump deliberately
 - `os.Logger` per category; `Observation` for state
 
 ## Development Workflow

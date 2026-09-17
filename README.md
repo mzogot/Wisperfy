@@ -29,7 +29,9 @@ make install     # build, bundle, sign, copy to /Applications, launch
 ```
 
 Needs a Swift 6 toolchain; the Xcode Command Line Tools are enough, Xcode is not needed.
-A Developer ID certificate is auto-detected for signing. Without one a local build is
+The Makefile builds against the SDK matching your macOS version, never a newer one the
+tools may ship (`make install SDK=26.5` forces one). A Developer ID certificate is
+auto-detected for signing. Without one a local build is
 signed ad hoc, which works but macOS forgets the permission grants on every rebuild.
 `make dmg` and `make notarize` produce the release image (see the Makefile for the
 credentials file it expects); `make dmg` refuses to run without a Developer ID.
@@ -238,6 +240,11 @@ Tests/WisperfyTests/                 swift test: formatters, vocabulary, diffs, 
 The Command Line Tools ship the Observation macros but not the SwiftUI ones, so
 `@State` and friends do not compile here. Views keep their state in `@Observable`
 objects or use phase animators. Everything else in SwiftUI works.
+
+Runtime actor-isolation checks are compiled out of the app target. The Swift 6.4
+toolchain inserts one at the entry of most closures, and on macOS 26 they crashed
+inside framework callbacks such as the event tap. Static Swift 6 checking still
+applies, so concurrency diagnostics must be fixed, never silenced.
 
 ## Roadmap
 
