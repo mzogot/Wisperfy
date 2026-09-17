@@ -135,7 +135,7 @@ release:
 	@grep -q "^## \[$(VERSION)\] - " CHANGELOG.md || { echo "CHANGELOG.md has no '## [$(VERSION)] - date' section; run make bump VERSION=..."; exit 1; }
 	@! git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null || { echo "tag v$(VERSION) already exists"; exit 1; }
 	@awk '/^## \[$(VERSION)\]/ { on=1; next } /^## \[|^\[[^ ]*\]: / { on=0 } on' CHANGELOG.md \
-		| sed -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' > "$(STAGE)/notes-$(VERSION).md"
+		| sed -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' | sed '/./,$$!d' > "$(STAGE)/notes-$(VERSION).md"
 	@test -s "$(STAGE)/notes-$(VERSION).md" || { echo "CHANGELOG section for $(VERSION) is empty"; exit 1; }
 	@$(MAKE) dmg
 	@$(MAKE) notarize

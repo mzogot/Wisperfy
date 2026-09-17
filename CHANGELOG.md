@@ -10,6 +10,11 @@ Every release starts by moving the Unreleased section into a new version heading
 
 ## [Unreleased]
 
+### Changed
+
+- `make bump` edits only the two version values in Info.plist instead of rewriting
+  the file; `make release` trims the leading blank line from the release notes.
+
 ## [0.2.0] - 2026-09-17
 
 ### Added
