@@ -3,7 +3,7 @@
 Push-to-talk dictation for macOS. Hold a key, talk, release, and clean text lands in
 whatever has focus. Everything runs on this Mac: no cloud, no account, no cost.
 
-**Status:** working skeleton. Two ways to dictate, three languages, two on-device engines.
+**Status:** early release (0.1.0). Two ways to dictate, three languages, two on-device engines.
 
 - **Push to talk.** Hold the key, speak, release. Text is typed into the focused app.
 - **Session.** Tap the key (or use the menu). A panel opens and listens until you press
@@ -11,16 +11,30 @@ whatever has focus. Everything runs on this Mac: no cloud, no account, no cost.
   you close it.
 - **Languages.** English, German, Russian, or auto-detect.
 
-## Requirements
+## Download
 
-- macOS 26 or later (uses `SpeechAnalyzer`, new in 26)
-- Swift 6 toolchain. Xcode Command Line Tools are enough; Xcode is not needed.
+Grab `Wisperfy-<version>.dmg` from the
+[latest release](https://github.com/mzogot/Wisperfy/releases/latest), open it and drag
+Wisperfy to Applications. The app is signed with a Developer ID and notarized by Apple,
+so it opens without warnings. It lives in the menu bar; there is no Dock icon.
 
-## Quick start
+Requires macOS 26 or later. Apple silicon is recommended: the Parakeet engine runs on
+the Neural Engine and the optional polish step needs Apple Intelligence. The first
+dictation in Auto-detect or Russian downloads the Parakeet model (~500 MB) once.
+
+## Build from source
 
 ```bash
 make install     # build, bundle, sign, copy to /Applications, launch
 ```
+
+Needs a Swift 6 toolchain; the Xcode Command Line Tools are enough, Xcode is not needed.
+A Developer ID certificate is auto-detected for signing. Without one the build is
+signed ad hoc, which works but macOS forgets the permission grants on every rebuild.
+`make dmg` and `make notarize` produce the release image (see the Makefile for the
+credentials file it expects).
+
+## First run
 
 Two permissions are required and neither can be granted silently:
 
@@ -37,6 +51,21 @@ If you choose **fn** as the key, set System Settings ▸ Keyboard ▸ "Press fn 
 
 Other targets: `make run` (run from the build cache), `make logs` (live log stream),
 `make reset-permissions` (resets only this app's grants), `make clean`.
+
+## Privacy
+
+Nothing leaves your Mac. There is no account, no telemetry and no network access
+except the one-time Parakeet model download from Hugging Face. Audio is processed in
+memory and never written to disk. Transcripts are kept locally so you can look them up
+and correct them:
+
+| File | Contents |
+|---|---|
+| `~/Library/Application Support/Wisperfy/history.json` | the last 500 transcripts |
+| `~/Library/Application Support/Wisperfy/vocabulary.json` | your terms and their misheard variants |
+
+Delete either file to clear it. Uninstall by dragging Wisperfy out of Applications and
+removing that folder.
 
 ## Languages and engines
 
@@ -164,5 +193,9 @@ objects or use phase animators. Everything else in SwiftUI works.
 1. Spoken corrections in the polish tier ("scratch that", "new paragraph")
 2. Local model for polishing languages Apple Intelligence lacks (Russian)
 3. Onboarding window for the two permissions
-4. Branding: icon, HUD motion, settings window
-5. Notarized release build
+4. Branding: HUD motion, settings window
+
+## License
+
+MIT, see [LICENSE](LICENSE). Bundled third-party software is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

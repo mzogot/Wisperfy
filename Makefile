@@ -54,6 +54,8 @@ app: build
 	@for b in "$(SCRATCH)/$(CONFIG)"/*.bundle; do [ -d "$$b" ] && cp -R "$$b" "$(CONTENTS)/Resources/" || true; done
 	@cp Resources/Info.plist "$(CONTENTS)/Info.plist"
 	@if [ -f Resources/AppIcon.icns ]; then cp Resources/AppIcon.icns "$(CONTENTS)/Resources/"; fi
+	@# Apache 2.0 (FluidAudio) asks that the license travel with the binary.
+	@cp LICENSE THIRD_PARTY_NOTICES.md "$(CONTENTS)/Resources/"
 	@printf 'APPL????' > "$(CONTENTS)/PkgInfo"
 	@xattr -cr "$(BUNDLE)"
 	@codesign --force --sign "$(SIGN_ID)" \
