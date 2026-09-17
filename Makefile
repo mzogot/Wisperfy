@@ -21,7 +21,19 @@ ifeq ($(strip $(SIGN_ID)),)
 SIGN_ID := -
 endif
 
-.PHONY: all build test app run install clean logs reset-permissions icon
+# A Developer ID signature meant for other machines needs a secure timestamp, or it
+# stops verifying once the certificate expires and notarization rejects it outright.
+# Dev builds skip it because it needs the network and adds a few seconds per build.
+ifeq ($(CONFIG),release)
+TIMESTAMP := --timestamp
+else
+TIMESTAMP := --timestamp=none
+endif
+
+VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.0.0)
+DMG     := $(STAGE)/$(APP)-$(VERSION).dmg
+
+.PHONY: all build test app run install clean logs reset-permissions icon dmg notarize
 
 all: app
 
@@ -47,7 +59,7 @@ app: build
 	@codesign --force --sign "$(SIGN_ID)" \
 		--entitlements Resources/$(APP).entitlements \
 		--options runtime \
-		--timestamp=none \
+		$(TIMESTAMP) \
 		"$(BUNDLE)"
 	@echo "built $(BUNDLE)  [signed: $(SIGN_ID)]"
 
@@ -62,6 +74,36 @@ install: app
 	@cp -R "$(BUNDLE)" "/Applications/$(APP).app"
 	@open "/Applications/$(APP).app"
 	@echo "installed /Applications/$(APP).app"
+
+## Shareable disk image: release build, timestamped signature, app + Applications shortcut.
+## Without notarization other Macs show "Apple could not verify" on first open; the
+## recipient must right-click > Open once, or approve it in System Settings > Privacy &
+## Security. Run `make notarize` afterwards to remove that step (needs credentials, see below).
+dmg:
+	@$(MAKE) app CONFIG=release
+	@rm -rf "$(STAGE)/dmgroot" "$(DMG)"
+	@mkdir -p "$(STAGE)/dmgroot"
+	@cp -R "$(BUNDLE)" "$(STAGE)/dmgroot/$(APP).app"
+	@ln -s /Applications "$(STAGE)/dmgroot/Applications"
+	@hdiutil create -quiet -volname "$(APP)" -srcfolder "$(STAGE)/dmgroot" -ov -format UDZO "$(DMG)"
+	@rm -rf "$(STAGE)/dmgroot"
+	@codesign --force --sign "$(SIGN_ID)" $(TIMESTAMP) "$(DMG)"
+	@echo "wrote $(DMG)  [signed: $(SIGN_ID)]"
+
+## Notarize and staple the DMG so Gatekeeper opens it without warnings on other Macs.
+## Credentials come from .env.release.local (APPLE_ID, APPLE_PASSWORD = app-specific
+## password from account.apple.com, APPLE_TEAM_ID). The file is gitignored.
+notarize:
+	@test -f "$(DMG)" || { echo "no $(DMG); run make dmg first"; exit 1; }
+	@test -f .env.release.local || { echo "missing .env.release.local"; exit 1; }
+	@set -a; . ./.env.release.local; set +a; \
+	test -n "$$APPLE_ID" -a -n "$$APPLE_PASSWORD" -a -n "$$APPLE_TEAM_ID" \
+		|| { echo "fill APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID in .env.release.local"; exit 1; }; \
+	xcrun notarytool submit "$(DMG)" --apple-id "$$APPLE_ID" --password "$$APPLE_PASSWORD" \
+		--team-id "$$APPLE_TEAM_ID" --wait
+	xcrun stapler staple "$(DMG)"
+	@cp "$(DMG)" "$(HOME)/Desktop/"
+	@echo "notarized and stapled $(DMG), copy on Desktop"
 
 ## Live log stream from the running app.
 logs:

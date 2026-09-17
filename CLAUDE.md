@@ -112,7 +112,9 @@ Decisions that look odd and are load-bearing:
 - **Tap vs hold** is a 350 ms threshold in the controller. The pipeline is already
   running when a tap is recognised; conversion is just a mode change.
 - **Signing is functional, not cosmetic.** macOS keys TCC grants to the code signature.
-  The Makefile auto-detects a Developer ID; never replace it with `--sign -`.
+  The Makefile auto-detects a Developer ID; never replace it with `--sign -`. Dev builds
+  sign without a timestamp (fast, offline); `make dmg` builds release with `--timestamp`,
+  which distribution and notarization require.
 - **The vocabulary learns only from explicit edits.** Text typed into other apps is
   invisible to us, so corrections come from editing a transcript in History or the
   session panel. Each substitution is offered once; nothing is auto-learned.
@@ -190,6 +192,8 @@ touching an area.
 make install                 # the normal loop
 make test                    # unit tests for the pure pieces
 make run                     # run from the build cache without installing
+make dmg                     # shareable release DMG in ~/Library/Caches/WisperfyBuild
+make notarize                # notarize + staple that DMG (needs a notarytool keychain profile)
 make clean                   # remove build cache and staged bundle
 /usr/bin/log show --last 5m --info --predicate 'subsystem == "com.wisperfy.app"' --style compact
 ```

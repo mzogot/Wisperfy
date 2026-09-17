@@ -3,3 +3,6 @@
 *.xcodeproj
 xcuserdata/
 .DS_Store
+
+# notarization credentials
+.env.release.local
