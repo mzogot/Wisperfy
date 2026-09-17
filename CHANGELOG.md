@@ -10,6 +10,15 @@ Every release starts by moving the Unreleased section into a new version heading
 
 ## [Unreleased]
 
+### Fixed
+
+- The chosen microphone is now really used while AirPods (or another headset) are the
+  system default. The audio engine used to accept the choice, report success and then
+  capture nothing, so dictating with AirPods in and the MacBook mic selected produced
+  no text. Capture now drives the HAL output unit directly.
+- The app's own private aggregate device (`CADefaultDeviceAggregate-…`) no longer
+  appears in the Microphone menu.
+
 ## [0.3.0] - 2026-09-17
 
 ### Added

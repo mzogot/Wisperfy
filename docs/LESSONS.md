@@ -26,8 +26,10 @@ Entry template:
 - **Cause:** a closure formed inside a `@MainActor` method is inferred main-actor
   isolated. `AVAudioEngine` calls it on its own realtime thread and the runtime
   isolation check traps.
-- **Rule:** the `installTap` closure and anything it calls are `@Sendable`. Never let
-  the compiler infer isolation for a callback that a framework calls off-main.
+- **Rule:** never let the compiler infer isolation for a callback that a framework
+  calls off-main. Today the capture callback is a C function pointer
+  (`Pipeline.inputCallback`) that carries the pipeline through `refCon`; when the
+  engine was still in use, the `installTap` closure was `@Sendable`.
 - **Where:** `Core/AudioCapture.swift`
 
 ### Isolation check crashes in framework callbacks
@@ -81,11 +83,36 @@ Entry template:
   property of the code shape, not of the data.
 - **Where:** `Core/DictationController.swift`, `feedTask`
 
-### Tap buffers are recycled
+### Render buffers are recycled
 - **Seen:** 2026-09-16, silent corruption when buffers were held past the callback.
-- **Cause:** `AVAudioEngine` reuses the tap buffer once the callback returns.
+- **Cause:** `AVAudioEngine` reused the tap buffer once the callback returned; the
+  AUHAL capture that replaced it renders into one scratch buffer that the next
+  callback overwrites.
 - **Rule:** copy the buffer before it crosses a thread or a stream.
 - **Where:** `Core/AudioCapture.swift`
+
+### The chosen microphone was ignored while AirPods were the system default
+- **Seen:** 2026-09-17, "MacBook Pro-Mikrofon" selected, AirPods in the ears. The log
+  claimed the MacBook mic but at 24000 Hz (the AirPods rate; the built-in mic runs
+  at 48000), and dictation produced nothing. With the AirPods out it worked, so the
+  setting only ever appeared to work when the chosen device was also the default.
+  The Microphone menu also listed a `CADefaultDeviceAggregate-<pid>-<n>` device.
+- **Cause:** touching `AVAudioEngine.inputNode` binds its IO unit to a process-wide
+  aggregate of the system default input and output and caches that format. Setting
+  `kAudioOutputUnitProperty_CurrentDevice` afterwards reads back correctly and
+  `start()` returns without error, but the node keeps the aggregate's rate, the unit
+  reverts to the aggregate and the tap gets zero frames (reproduced in a script:
+  `outputFormat` stayed 24 kHz, device-side format 48 kHz, 0 frames in a second).
+  The aggregate device is that engine's, created for the process and visible to it.
+- **Rule:** capture drives a HAL output unit directly (`kAudioUnitSubType_HALOutput`,
+  input on element 1, output off on element 0), sets the device *before* reading any
+  format, and reads the device back after start for the log. `AVAudioEngine` is not
+  used anywhere in the app. `AudioDevices.inputDevices()` hides
+  `CADefaultDeviceAggregate` names in case a framework creates one again.
+  Note for scripts: a `swift` script run from the terminal has no microphone grant
+  and receives silence, so a level check proves nothing there; the running-device
+  read-back and `kAudioDevicePropertyDeviceIsRunningSomewhere` do.
+- **Where:** `Core/AudioCapture.swift`, `Support/AudioDevices.swift`
 
 ### `assumeIsolated` is not a fix
 - **Seen:** 2026-09-16, considered as a shortcut for isolation errors.

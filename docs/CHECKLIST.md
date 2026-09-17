@@ -85,6 +85,10 @@ Watch `make logs` in a second terminal throughout.
       the AirPods in the picker: log names them and dictation works through them.
       Disconnect them: picker shows "Saved microphone (not connected)" and capture
       falls back to the system default with a log line.
+- [ ] Same with the AirPods *in your ears*, so macOS has made them the system default
+      for input and output: log shows `capture started from MacBook Pro-Mikrofon:
+      48000 Hz` (not 24000, the AirPods rate), a peak level above 0, and text arrives.
+      The Microphone submenu lists no `CADefaultDeviceAggregate-…` entry.
 - [ ] Put AirPods in (or connect any Bluetooth headset) and press the key within a
       second or two: either dictation works from the headset, or the HUD shows
       "Microphone did not start" and the next press works. The app never freezes.

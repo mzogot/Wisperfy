@@ -38,12 +38,15 @@ enum MicrophoneChoice: Hashable, Sendable {
 
 /// Read-only CoreAudio HAL queries: cheap property reads, no engine, no IO unit.
 enum AudioDevices {
-    /// Every device with at least one input channel.
+    /// Every device with at least one input channel, minus the private
+    /// `CADefaultDeviceAggregate-<pid>-<n>` devices Apple's audio frameworks create
+    /// for the calling process; they are an implementation detail, not a microphone.
     static func inputDevices() -> [InputDevice] {
         deviceIDs().compactMap { id in
             guard inputChannels(of: id) > 0,
                   let uid = string(of: id, selector: kAudioDevicePropertyDeviceUID),
-                  let name = string(of: id, selector: kAudioDevicePropertyDeviceNameCFString)
+                  let name = string(of: id, selector: kAudioDevicePropertyDeviceNameCFString),
+                  !name.hasPrefix("CADefaultDeviceAggregate")
             else { return nil }
             let transport = uint32(of: id, selector: kAudioDevicePropertyTransportType) ?? 0
             return InputDevice(id: id, uid: uid, name: name, isBuiltIn: transport == kAudioDeviceTransportTypeBuiltIn)

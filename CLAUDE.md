@@ -54,12 +54,15 @@ Wisperfy/
 - **Core/DictationController.swift**: the state machine. `idle → starting → listening →
   finishing → idle`, two modes (`pushToTalk`, `session`). Everything is wired here.
 - **Core/HotkeyMonitor.swift**: `CGEventTap` on modifier `flagsChanged`. Needs Accessibility.
-- **Core/AudioCapture.swift**: an actor owning a fresh `AVAudioEngine` per capture,
-  converts to the engine's format, RMS level, pins the IO unit to the chosen device
-  (`MicrophoneChoice`, built-in by default). Never called from the main thread: the
-  engine has blocked forever during a Bluetooth input switch, and the controller
-  bounds every call with a timeout. `Support/AudioDevices.swift` holds the read-only
-  HAL queries; those are cheap and the menu may call them.
+- **Core/AudioCapture.swift**: an actor owning a fresh HAL output unit (AUHAL) per
+  capture: input enabled, output disabled, pinned to the chosen device
+  (`MicrophoneChoice`, built-in by default) before any format is read, converts to
+  the engine's format, RMS level. Not `AVAudioEngine`: its input node follows the
+  system default device and silently drops a pinned one (see `docs/LESSONS.md`).
+  Never called from the main thread: CoreAudio has blocked forever during a
+  Bluetooth input switch, and the controller bounds every call with a timeout.
+  `Support/AudioDevices.swift` holds the read-only HAL queries; those are cheap and
+  the menu may call them.
 - **Core/TextInjector.swift**: Accessibility insert verified by caret movement, else paste.
   Detects secure text fields (`AXSecureTextField` subrole) and types into those as
   keystrokes, never via the pasteboard.
@@ -132,9 +135,15 @@ Decisions that look odd and are load-bearing:
   Left ⌥ (device flag bits `0x40` / `0x10`). Do not "simplify" to `addGlobalMonitor`.
 - **Audio ordering is explicit.** One task drains one `AsyncStream` with sequential
   awaits. A `Task` per buffer silently scrambles transcripts.
-- **Tap buffers are copied, never borrowed.** `AVAudioEngine` recycles them on return.
-- **The audio tap closure is `@Sendable`.** Without it Swift infers main-actor isolation
-  and traps on the audio thread. This crashed the app once.
+- **Capture is a raw AUHAL, not `AVAudioEngine`.** The engine's input node binds to a
+  process-wide aggregate of the system default devices and keeps its format; a device
+  pinned afterwards reads back fine, `start()` succeeds, and no audio arrives. With
+  AirPods in the ears and the MacBook mic selected, dictation produced nothing.
+- **Render buffers are copied, never borrowed.** The capture scratch buffer is
+  overwritten by the next callback.
+- **The audio callback is a C function pointer, not a closure formed in an actor.**
+  A closure formed inside a `@MainActor` type is inferred main-actor isolated and
+  traps on the audio thread. This crashed the app once.
 - **AX insert success is not trusted.** Electron, Chrome and terminals accept the write
   and drop it. Only a moved caret counts; otherwise fall back to paste.
 - **The final text always lands on the clipboard and in history, in both modes.** The
