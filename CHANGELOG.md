@@ -10,6 +10,8 @@ Every release starts by moving the Unreleased section into a new version heading
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-17
+
 ### Added
 
 - Password fields are private: when the focused control is a secure text field, the
@@ -97,6 +99,7 @@ First public release.
   timestamped Developer ID signature, `make notarize` to notarize and staple the DMG.
 - MIT license and third-party notices (FluidAudio, Parakeet) in the repository.
 
-[Unreleased]: https://github.com/mzogot/Wisperfy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mzogot/Wisperfy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/mzogot/Wisperfy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mzogot/Wisperfy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mzogot/Wisperfy/releases/tag/v0.1.0
